@@ -761,7 +761,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             let panelContentContainer: UIView
             let isSizeEditing = self.giftsListView.isSizeEditing
             
-            var panelVisibility = params.expandProgress < 1.0 ? 0.0 : 1.0
+            var panelVisibility: CGFloat = isSizeEditing || params.expandProgress >= 1.0 ? 1.0 : 0.0
             if !isSizeEditing && (!self.canGift || self.resultsAreEmpty) {
                 panelVisibility = 0.0
             }
@@ -868,9 +868,22 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                 }
                 panelButtonView.frame = CGRect(origin: CGPoint(x: buttonInsets.left, y: 8.0), size: panelButtonSize)
                 panelButtonView.isHidden = false
+                panelButtonView.isAccessibilityElement = false
+                if let button = panelButtonView.subviews.first(where: { $0 is UIButton }) as? UIButton {
+                    button.isAccessibilityElement = true
+                    button.accessibilityTraits = .button
+                    button.accessibilityLabel = buttonTitle
+                }
             }
             
-            panelTransition.setFrame(view: panelContentContainer, frame: CGRect(origin: CGPoint(x: 0.0, y: size.height - bottomPanelHeight), size: CGSize(width: size.width, height: bottomPanelHeight)))
+            let panelBottom: CGFloat
+            if isSizeEditing, let parentController = self.parentController {
+                // Keep Save reachable while the profile header is still visible.
+                panelBottom = max(0.0, min(size.height, self.view.convert(parentController.view.bounds, from: parentController.view).maxY))
+            } else {
+                panelBottom = size.height
+            }
+            panelTransition.setFrame(view: panelContentContainer, frame: CGRect(origin: CGPoint(x: 0.0, y: panelBottom - bottomPanelHeight), size: CGSize(width: size.width, height: bottomPanelHeight)))
             
             if self.canManage && !isSizeEditing {
                 let panelCheck: ComponentView<Empty>
