@@ -16,6 +16,17 @@ enum GiftBulkActionError: Equatable {
     case generic
 }
 
+enum GiftBulkSelectionRestriction: Equatable {
+    case missingReference
+    case refunded
+    case requiresCollectible
+    case alreadyUpgraded
+    case upgradeUnavailable
+    case hostedGift
+    case burnedGift
+    case transferCooldown(until: Int32)
+}
+
 struct GiftBulkQuotedGift {
     let reference: StarGiftReference
     let formId: Int64?
@@ -39,22 +50,43 @@ struct GiftBulkProgress {
 
 enum GiftBulkActions {
     static func isEligible(gift: ProfileGiftsContext.State.StarGift, mode: GiftBulkActionMode, now: Int32) -> Bool {
-        guard gift.reference != nil, !gift.isRefunded else {
-            return false
-        }
+        return self.selectionRestriction(gift: gift, mode: mode, now: now) == nil
+    }
+
+    static func selectionRestriction(gift: ProfileGiftsContext.State.StarGift, mode: GiftBulkActionMode, now: Int32) -> GiftBulkSelectionRestriction? {
         switch (mode, gift.gift) {
         case let (.transfer, .unique(uniqueGift)):
-            guard uniqueGift.hostPeerId == nil, !uniqueGift.flags.contains(.isBurned) else {
-                return false
+            if uniqueGift.hostPeerId != nil {
+                return .hostedGift
+            }
+            if uniqueGift.flags.contains(.isBurned) {
+                return .burnedGift
+            }
+            if gift.isRefunded {
+                return .refunded
+            }
+            if gift.reference == nil {
+                return .missingReference
             }
             if let canTransferDate = gift.canTransferDate, now < canTransferDate {
-                return false
+                return .transferCooldown(until: canTransferDate)
             }
-            return true
+            return nil
+        case (.transfer, .generic):
+            return .requiresCollectible
         case (.upgrade, .generic):
-            return gift.canUpgrade
-        default:
-            return false
+            if gift.isRefunded {
+                return .refunded
+            }
+            if !gift.canUpgrade {
+                return .upgradeUnavailable
+            }
+            if gift.reference == nil {
+                return .missingReference
+            }
+            return nil
+        case (.upgrade, .unique):
+            return .alreadyUpgraded
         }
     }
 

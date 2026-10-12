@@ -186,6 +186,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         self.giftsListView.bulkSelectionUpdated = { [weak self] in
             self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
         }
+        self.giftsListView.bulkSelectionUnavailable = { [weak self] gift, mode in
+            self?.explainBulkGiftRestriction(gift: gift, mode: mode)
+        }
         self.giftsListView.displayUnpinScreen = { [weak self] gift, completion in
             guard let self else {
                 return
@@ -401,12 +404,11 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         if let state = self.giftsListView.profileGifts.currentState,
            case .ready(false, _) = state.dataState,
            !state.filteredGifts.contains(where: { GiftBulkActions.isEligible(gift: $0, mode: mode, now: Int32(clamping: Int64(Date().timeIntervalSince1970))) }) {
-            self.giftsListView.endBulkSelection()
             let text: String
             if mode == .transfer {
-                text = self.bulkGiftRussian ? "Нет доступных для отправки коллекционных подарков. Некоторые подарки могут быть временно заблокированы для передачи." : "No collectible gifts are available to send. Some gifts may have a transfer cooldown."
+                text = self.bulkGiftRussian ? "Нет доступных для отправки коллекционных подарков. Нажмите на подарок с замком, чтобы узнать причину." : "No collectible gifts are available to send. Tap a locked gift to see why."
             } else {
-                text = self.bulkGiftRussian ? "Нет обычных подарков, доступных для улучшения. Коллекционные подарки уже улучшены." : "No regular gifts are available to upgrade. Collectible gifts are already upgraded."
+                text = self.bulkGiftRussian ? "Нет обычных подарков, доступных для улучшения. Нажмите на подарок с замком, чтобы узнать причину." : "No regular gifts are available to upgrade. Tap a locked gift to see why."
             }
             self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Нет доступных подарков" : "No Available Gifts", text: text)
         }
@@ -439,6 +441,46 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             TextAlertAction(type: .defaultAction, title: strings.Common_OK, action: {})
         ])
         self.parentController?.present(controller, in: .window(.root))
+    }
+
+    private func explainBulkGiftRestriction(gift: ProfileGiftsContext.State.StarGift, mode: GiftBulkActionMode) {
+        guard !self.bulkGiftBusy, self.giftsListView.bulkSelectionMode == mode,
+              let reason = GiftBulkActions.selectionRestriction(gift: gift, mode: mode, now: Int32(clamping: Int64(Date().timeIntervalSince1970))) else { return }
+        let text: String
+        switch reason {
+        case .requiresCollectible:
+            text = self.bulkGiftRussian ? "Передавать можно коллекционные подарки. Если этот подарок поддерживает улучшение, сначала улучшите его." : "Only collectible gifts can be transferred. If this gift supports upgrading, upgrade it first."
+        case .alreadyUpgraded:
+            text = self.bulkGiftRussian ? "Этот подарок уже коллекционный и не требует улучшения." : "This gift is already collectible and cannot be upgraded again."
+        case .upgradeUnavailable:
+            text = self.bulkGiftRussian ? "Telegram не разрешает улучшение этого подарка." : "Telegram does not support upgrading this gift."
+        case .hostedGift:
+            text = self.bulkGiftRussian ? "Этот подарок размещён в профиле из TON. Его передача выполняется через кошелёк владельца." : "This gift is linked to the profile from TON. Transfer it from the owner's wallet."
+        case .burnedGift:
+            text = self.bulkGiftRussian ? "Этот подарок уничтожен и больше недоступен для передачи." : "This gift was burned and can no longer be transferred."
+        case .refunded:
+            text = self.bulkGiftRussian ? "Улучшение этого подарка было возвращено. Действие недоступно." : "The upgrade of this gift was refunded. This action is unavailable."
+        case let .transferCooldown(until):
+            let data = self.currentParams?.presentationData ?? self.context.sharedContext.currentPresentationData.with { $0 }
+            let date = stringForFullDate(timestamp: until, strings: data.strings, dateTimeFormat: data.dateTimeFormat)
+            text = self.bulkGiftRussian ? "Telegram временно ограничил передачу этого подарка. Он будет доступен после \(date)." : "Telegram has temporarily restricted this gift. It can be transferred after \(date)."
+        case .missingReference:
+            let strings = self.currentParams?.presentationData.strings ?? self.context.sharedContext.currentPresentationData.with { $0 }.strings
+            let controller = textAlertController(context: self.context,
+                title: self.bulkGiftRussian ? "Обновите подарок" : "Refresh Gift Details",
+                text: self.bulkGiftRussian ? "В данных подарка пока нет идентификатора для этого действия. Обновите список подарков и попробуйте снова." : "This gift's details do not yet contain an identifier for this action. Refresh the gift list and try again.",
+                actions: [
+                    TextAlertAction(type: .genericAction, title: strings.Common_Cancel, action: {}),
+                    TextAlertAction(type: .defaultAction, title: self.bulkGiftRussian ? "Обновить" : "Refresh", action: { [weak self] in
+                        self?.giftsListView.profileGifts.reload()
+                    })
+                ])
+            self.parentController?.present(controller, in: .window(.root))
+            return
+        }
+        self.presentBulkGiftMessage(title: mode == .transfer
+            ? (self.bulkGiftRussian ? "Подарок нельзя отправить" : "Gift Cannot Be Sent")
+            : (self.bulkGiftRussian ? "Подарок нельзя улучшить" : "Gift Cannot Be Upgraded"), text: text)
     }
 
     private func bulkGiftErrorText(_ error: GiftBulkActionError) -> String {
@@ -775,6 +817,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         self.giftsListView.bulkSelectionUpdated = { [weak self] in
             self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
         }
+        self.giftsListView.bulkSelectionUnavailable = { [weak self] gift, mode in
+            self?.explainBulkGiftRestriction(gift: gift, mode: mode)
+        }
         self.giftsListView.parentController = self.parentController
         self.giftsListView.frame = previousGiftsListView.frame
                                         
@@ -1093,7 +1138,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                 } else if self.bulkGiftBusy {
                     buttonTitle = self.bulkGiftRussian ? "Проверяем стоимость…" : "Checking Prices…"
                 } else if selectedBulkCount == 0 {
-                    buttonTitle = self.bulkGiftRussian ? "Выберите подарки" : "Select Gifts"
+                    buttonTitle = self.giftsListView.bulkSelectionMode == .transfer
+                        ? (self.bulkGiftRussian ? "Выберите подарки для отправки" : "Select Gifts to Send")
+                        : (self.bulkGiftRussian ? "Выберите подарки для улучшения" : "Select Gifts to Upgrade")
                 } else if self.giftsListView.bulkSelectionMode == .transfer {
                     buttonTitle = self.bulkGiftRussian ? "Отправить (\(selectedBulkCount))" : "Send Gifts (\(selectedBulkCount))"
                 } else {

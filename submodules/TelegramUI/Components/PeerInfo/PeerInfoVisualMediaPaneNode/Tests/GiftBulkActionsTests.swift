@@ -63,6 +63,30 @@ enum GiftBulkActionsTests {
         check(GiftBulkActions.isEligible(gift: .init(gift: .unique(.init()), reference: .test(1), canTransferDate: 100), mode: .transfer, now: 100), "Cooldown ends at exact timestamp")
         check(!GiftBulkActions.isEligible(gift: .init(gift: .generic, reference: .test(1), isRefunded: true, canUpgrade: true), mode: .upgrade, now: 100), "Refunded gift blocked")
         check(!GiftBulkActions.isEligible(gift: .init(gift: .generic, reference: nil, canUpgrade: true), mode: .upgrade, now: 100), "Reference is required")
+
+        check(GiftBulkActions.selectionRestriction(gift: gift(1), mode: .transfer, now: 100) == nil, "Eligible collectible has no restriction")
+        check(GiftBulkActions.selectionRestriction(gift: gift(1, unique: false), mode: .upgrade, now: 100) == nil, "Eligible regular gift has no restriction")
+        check(GiftBulkActions.selectionRestriction(gift: gift(1, unique: false), mode: .transfer, now: 100) == .requiresCollectible, "Explain regular gifts cannot be transferred")
+        check(GiftBulkActions.selectionRestriction(gift: gift(1), mode: .upgrade, now: 100) == .alreadyUpgraded, "Explain collectible is already upgraded")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .generic, reference: .test(1)), mode: .upgrade, now: 100) == .upgradeUnavailable, "Explain unavailable regular-gift upgrade")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .generic, reference: nil), mode: .upgrade, now: 100) == .upgradeUnavailable, "Unavailable upgrade precedes absent reference")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .generic, reference: nil, canUpgrade: true), mode: .upgrade, now: 100) == .missingReference, "Upgradable gift without reference explains reload requirement")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init()), reference: nil), mode: .transfer, now: 100) == .missingReference, "Collectible without reference explains reload requirement")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init(hostPeerId: 99)), reference: nil), mode: .transfer, now: 100) == .hostedGift, "Hosting restriction precedes absent reference")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init(flags: .isBurned)), reference: nil), mode: .transfer, now: 100) == .burnedGift, "Burned restriction precedes absent reference")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .generic, reference: nil, isRefunded: true, canUpgrade: true), mode: .upgrade, now: 100) == .refunded, "Refund explains unavailable upgrade before absent reference")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init()), reference: .test(1), isRefunded: true), mode: .transfer, now: 100) == .refunded, "Refund explains unavailable transfer")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init()), reference: .test(1), canTransferDate: 101), mode: .transfer, now: 100) == .transferCooldown(until: 101), "Cooldown reason retains exact server timestamp")
+        check(GiftBulkActions.selectionRestriction(gift: .init(gift: .unique(.init()), reference: .test(1), canTransferDate: 100), mode: .transfer, now: 100) == nil, "Cooldown reason expires at the exact timestamp")
+
+        let context = AccountContext()
+        let blockedGift = ProfileGiftsContext.State.StarGift(gift: .unique(.init()), reference: .test(1), canTransferDate: Int32.max)
+        if case let .failure(error) = prepare(context, [blockedGift], .transfer, 2) {
+            check(error == .unavailableGift, "Reason-bearing selection still blocks execution preparation during cooldown")
+        } else {
+            preconditionFailure("Restricted gift unexpectedly prepared")
+        }
+        check(context.engine.payments.quotedSources.isEmpty && context.engine.payments.paidCalls.isEmpty && context.engine.payments.freeTransferCalls.isEmpty, "Blocked selection sends no quote, payment, or gift request")
     }
     static func quotes() {
         let context = AccountContext()

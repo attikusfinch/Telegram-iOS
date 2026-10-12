@@ -109,6 +109,7 @@ final class GiftsListView: UIView {
     private(set) var bulkSelectionMode: GiftBulkActionMode?
     var isBulkSelecting: Bool { return self.bulkSelectionMode != nil }
     var bulkSelectionUpdated: (() -> Void)?
+    var bulkSelectionUnavailable: ((ProfileGiftsContext.State.StarGift, GiftBulkActionMode) -> Void)?
     private var bulkSelectionEligibility: ((ProfileGiftsContext.State.StarGift, GiftBulkActionMode) -> Bool)?
     private var selectedBulkReferences = Set<StarGiftReference>()
     private var bulkSelectionOverlays: [AnyHashable: GiftBulkSelectionOverlay] = [:]
@@ -550,7 +551,11 @@ final class GiftsListView: UIView {
     }
 
     private func toggleBulkGift(_ gift: ProfileGiftsContext.State.StarGift) {
-        guard let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility, let reference = gift.reference, eligibility(gift, mode) else {
+        guard let mode = self.bulkSelectionMode else {
+            return
+        }
+        guard let eligibility = self.bulkSelectionEligibility, let reference = gift.reference, eligibility(gift, mode) else {
+            self.bulkSelectionUnavailable?(gift, mode)
             return
         }
         if self.selectedBulkReferences.contains(reference) {
@@ -1086,7 +1091,7 @@ final class GiftsListView: UIView {
                     containerSize: itemFrame.size
                 )
                 if let itemView = visibleItem.view {
-                    itemView.isUserInteractionEnabled = !isAdded && (!self.isBulkSelecting || isBulkEligible)
+                    itemView.isUserInteractionEnabled = !isAdded
                     if itemView.superview == nil {
                         self.addSubview(itemView)
                         
@@ -1124,7 +1129,7 @@ final class GiftsListView: UIView {
                     if isResizing {
                         self.bringSubviewToFront(itemView)
                     }
-                    if self.isBulkSelecting && isBulkEligible {
+                    if let bulkSelectionMode = self.bulkSelectionMode {
                         validBulkOverlayIds.insert(itemId)
                         let overlay: GiftBulkSelectionOverlay
                         if let current = self.bulkSelectionOverlays[itemId] {
@@ -1143,7 +1148,7 @@ final class GiftsListView: UIView {
                             isUnique = true
                             accessibilityTitle = "\(gift.title) #\(gift.number)"
                         }
-                        overlay.update(theme: params.presentationData.theme, isUnique: isUnique, isSelected: isBulkSelected, title: accessibilityTitle, animated: !itemTransition.animation.isImmediate, action: { [weak self] in
+                        overlay.update(theme: params.presentationData.theme, canSelect: isBulkEligible, mode: bulkSelectionMode, isUnique: isUnique, isSelected: isBulkSelected, title: accessibilityTitle, isRussian: params.presentationData.strings.primaryComponent.languageCode.hasPrefix("ru"), animated: !itemTransition.animation.isImmediate, action: { [weak self] in
                             self?.toggleBulkGift(product)
                         })
                         if overlay.superview !== itemView {
@@ -1495,11 +1500,17 @@ final class GiftsListView: UIView {
 
 private final class GiftBulkSelectionOverlay: UIButton {
     private var checkLayer: CheckLayer?
+    private let lockBadgeView = UIView()
+    private let lockIconView = UIImageView()
     private var action: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         self.isAccessibilityElement = true
+        self.lockBadgeView.isUserInteractionEnabled = false
+        self.lockIconView.isUserInteractionEnabled = false
+        self.lockBadgeView.addSubview(self.lockIconView)
+        self.addSubview(self.lockBadgeView)
         self.addTarget(self, action: #selector(self.pressed), for: .touchUpInside)
     }
 
@@ -1507,15 +1518,41 @@ private final class GiftBulkSelectionOverlay: UIButton {
         preconditionFailure()
     }
 
-    func update(theme: PresentationTheme, isUnique: Bool, isSelected: Bool, title: String, animated: Bool, action: @escaping () -> Void) {
+    func update(theme: PresentationTheme, canSelect: Bool, mode: GiftBulkActionMode, isUnique: Bool, isSelected: Bool, title: String, isRussian: Bool, animated: Bool, action: @escaping () -> Void) {
         self.action = action
+        self.isEnabled = true
         self.accessibilityLabel = title
-        self.accessibilityTraits = isSelected ? [.button, .selected] : [.button]
+        self.accessibilityTraits = canSelect && isSelected ? [.button, .selected] : [.button]
+        if canSelect {
+            self.accessibilityValue = isSelected ? (isRussian ? "Выбрано" : "Selected") : (isRussian ? "Не выбрано" : "Not Selected")
+            self.accessibilityHint = nil
+        } else {
+            self.accessibilityValue = isRussian ? "Недоступно" : "Unavailable"
+            switch mode {
+            case .transfer:
+                self.accessibilityHint = isRussian ? "Нажмите, чтобы узнать, почему этот подарок нельзя отправить" : "Tap to see why this gift cannot be sent"
+            case .upgrade:
+                self.accessibilityHint = isRussian ? "Нажмите, чтобы узнать, почему этот подарок нельзя улучшить" : "Tap to see why this gift cannot be upgraded"
+            }
+        }
 
         let checkTheme = CheckNodeTheme(theme: theme, style: isUnique ? .overlay : .plain)
         var checkFrame = CGRect(x: 4.0, y: 4.0, width: 26.0, height: 26.0)
         if !isUnique {
             checkFrame = checkFrame.insetBy(dx: 2.0, dy: 2.0)
+        }
+        self.lockBadgeView.isHidden = canSelect
+        if !canSelect {
+            self.checkLayer?.removeFromSuperlayer()
+            self.checkLayer = nil
+            self.lockBadgeView.frame = checkFrame
+            self.lockBadgeView.layer.cornerRadius = checkFrame.width * 0.5
+            self.lockBadgeView.backgroundColor = theme.list.blocksBackgroundColor.withAlphaComponent(0.9)
+            self.lockIconView.image = generateTintedImage(image: UIImage(bundleImageName: "Chat/Stickers/SmallLock"), color: theme.list.itemSecondaryTextColor)
+            let iconSize = CGSize(width: 14.0, height: 14.0)
+            self.lockIconView.contentMode = .scaleAspectFit
+            self.lockIconView.frame = CGRect(origin: CGPoint(x: floor((checkFrame.width - iconSize.width) * 0.5), y: floor((checkFrame.height - iconSize.height) * 0.5)), size: iconSize)
+            return
         }
         let checkLayer: CheckLayer
         let isNew: Bool
