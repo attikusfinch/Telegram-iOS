@@ -328,6 +328,8 @@ final class GiftsListView: UIView {
             self.reorderRecognizer?.isEnabled = isReordering
             
             if !isReordering, let _ = self.reorderedReferences, let starsProducts = self.starsProducts {
+                self.savedSizeAnchor = nil
+                self.sizeStore.save(self.savedSizes)
                 if let collectionId = self.profileGifts.collectionId {
                     var orderedReferences: [StarGiftReference] = []
                     for gift in starsProducts {
@@ -649,7 +651,7 @@ final class GiftsListView: UIView {
         var layoutSizes = tileSizes
         var anchor: (index: Int, column: Int, row: Int)?
         let storedAnchor = self.isSizeEditing ? self.draftSizeAnchor : self.savedSizeAnchor
-        if !self.canSelect, let storedAnchor, storedAnchor.scope == layoutScope, let index = starsProducts.firstIndex(where: { self.sizeKey(for: $0) == storedAnchor.key }) {
+        if !self.canSelect, !self.isReordering, let storedAnchor, storedAnchor.scope == layoutScope, let index = starsProducts.firstIndex(where: { self.sizeKey(for: $0) == storedAnchor.key }) {
             // Removing gifts may reduce the grid height; avoid preserving an empty gap.
             anchor = (index, storedAnchor.column, min(storedAnchor.row, max(0, starsProducts.count * 2 - 1)))
         }
