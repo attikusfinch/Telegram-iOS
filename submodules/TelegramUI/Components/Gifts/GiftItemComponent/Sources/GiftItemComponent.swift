@@ -471,7 +471,13 @@ public final class GiftItemComponent: Component {
                 }
             case .profile, .select:
                 size = availableSize
-                let side = floor(88.0 * availableSize.height / 116.0)
+                let artworkSide: CGFloat
+                if case .profile = component.mode {
+                    artworkSide = min(availableSize.width, availableSize.height)
+                } else {
+                    artworkSide = availableSize.height
+                }
+                let side = floor(88.0 * artworkSide / 116.0)
                 iconSize = CGSize(width: side, height: side)
                 switch component.style {
                 case .glass:
@@ -796,13 +802,14 @@ public final class GiftItemComponent: Component {
             }
             
             if let backgroundColor {
+                let backgroundTransition: ComponentTransition = component.mode == .profile ? transition : .immediate
                 if let backgroundView = self.patternView.view as? PeerInfoCoverComponent.View {
                     if animateBackgroundChange {
                         backgroundView.animateTransition(background: true, bounce: false)
                     }
                 }
                 let _ = self.patternView.update(
-                    transition: .immediate,
+                    transition: backgroundTransition,
                     component: AnyComponent(PeerInfoCoverComponent(
                         context: component.context,
                         subject: .custom(backgroundColor, secondBackgroundColor, patternColor, patternFile?.fileId.id),
@@ -826,7 +833,7 @@ public final class GiftItemComponent: Component {
                         backgroundView.clipsToBounds = true
                         self.insertSubview(backgroundView, at: 1)
                     }
-                    backgroundView.frame = CGRect(origin: CGPoint(x: floorToScreenPixels((size.width - backgroundSize.width) / 2.0), y: floorToScreenPixels((size.height - backgroundSize.height) / 2.0)), size: backgroundSize)
+                    backgroundTransition.setFrame(view: backgroundView, frame: CGRect(origin: CGPoint(x: floorToScreenPixels((size.width - backgroundSize.width) / 2.0), y: floorToScreenPixels((size.height - backgroundSize.height) / 2.0)), size: backgroundSize))
                 }
             }
                         

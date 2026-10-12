@@ -53,6 +53,16 @@ extension PeerInfoScreenNode {
         })
         |> map { [weak pane, weak giftsContext, weak self] filter, sorting, canReorder -> ContextController.Items in
             var items: [ContextMenuItem] = []
+            if let pane, pane.canResizeGifts {
+                items.append(.action(ContextMenuActionItem(text: pane.resizeGiftsTitle, icon: { theme in
+                    let configuration = UIImage.SymbolConfiguration(pointSize: 20.0, weight: .regular)
+                    return UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: configuration)?.withTintColor(theme.contextMenu.primaryColor, renderingMode: .alwaysOriginal)
+                }, action: { [weak pane] controller, _ in
+                    controller?.dismiss(completion: { [weak pane] in
+                        pane?.beginSizeEditing()
+                    })
+                })))
+            }
                         
             if hasVisibility {
                 if let pane, case .all = pane.currentCollection {

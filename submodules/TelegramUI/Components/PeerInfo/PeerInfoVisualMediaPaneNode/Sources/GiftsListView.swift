@@ -71,6 +71,35 @@ final class GiftsListView: UIView {
     private var starsProducts: [ProfileGiftsContext.State.StarGift]?
     private var starsItems: [AnyHashable: (StarGiftReference?, ComponentView<Empty>)] = [:]
 
+    private let sizeStore: GiftSizeStore
+    private var savedSizes: [String: GiftTileSize]
+    private var draftSizes: [String: GiftTileSize]?
+    private var savedSizeAnchor: GiftTileAnchor?
+    private var draftSizeAnchor: GiftTileAnchor?
+    private var resizeHandles: [AnyHashable: GiftResizeHandle] = [:]
+    private var sizeEditingPanel: GiftSizeEditingPanel?
+    private var tileGeometry: [String: (frame: CGRect, placement: GiftTilePlacement, columns: Int, cellSize: CGSize, spacing: CGFloat)] = [:]
+    private var cachedTileLayout: (sizes: [GiftTileSize], columns: Int, anchorIndex: Int?, anchorColumn: Int?, anchorRow: Int?, placements: [GiftTilePlacement])?
+    private struct ResizingGift {
+        let key: String
+        let initialFrame: CGRect
+        let initialSize: GiftTileSize
+        let column: Int
+        let row: Int
+        let cellSize: CGSize
+        let spacing: CGFloat
+        let scope: String
+        let growsInward: Bool
+        var previewSize: CGSize
+        var reservedSize: GiftTileSize
+    }
+    private var resizingGift: ResizingGift?
+    private weak var resizingScrollView: UIScrollView?
+    private var resizingScrollWasEnabled: Bool = true
+    private(set) var isSizeEditing: Bool = false
+    var isResizingGift: Bool { return self.resizingGift != nil }
+    var sizeEditingUpdated: (() -> Void)?
+
     private(set) var resultsAreEmpty = false
     private var filteredResultsAreEmpty = false
     
@@ -135,6 +164,10 @@ final class GiftsListView: UIView {
         self.canSelect = canSelect
         self.ignoreCollection = ignoreCollection
         self.remainingSelectionCount = remainingSelectionCount
+        let sizeStore = GiftSizeStore(accountId: context.account.peerId.toInt64(), peerId: peerId.toInt64())
+        self.sizeStore = sizeStore
+        self.savedSizes = sizeStore.load()
+        self.savedSizeAnchor = sizeStore.loadAnchor()
                 
         if let value = context.currentAppConfiguration.with({ $0 }).data?["stargifts_pinned_to_top_limit"] as? Double {
             self.maxPinnedCount = Int(value)
@@ -251,6 +284,7 @@ final class GiftsListView: UIView {
     
     deinit {
         self.dataDisposable?.dispose()
+        self.restoreResizingScroll()
     }
         
     func item(at point: CGPoint) -> (AnyHashable, ComponentView<Empty>)? {
@@ -263,6 +297,9 @@ final class GiftsListView: UIView {
     }
         
     func beginReordering() {
+        if self.isSizeEditing {
+            self.endSizeEditing(save: false)
+        }
         self.profileGifts.updateFilter(.All)
         self.profileGifts.updateSorting(.date)
         
@@ -282,6 +319,9 @@ final class GiftsListView: UIView {
     }
     
     func updateIsReordering(isReordering: Bool, animated: Bool) {
+        if isReordering && self.isSizeEditing {
+            self.endSizeEditing(save: false)
+        }
         if self.isReordering != isReordering {
             self.isReordering = isReordering
             
@@ -402,6 +442,152 @@ final class GiftsListView: UIView {
     func loadMore() {
         self.profileGifts.loadMore()
     }
+
+    func beginSizeEditing() {
+        guard !self.canSelect, !self.isSizeEditing else {
+            return
+        }
+        if self.isReordering {
+            self.endReordering()
+        }
+        self.savedSizes = self.sizeStore.load()
+        self.savedSizeAnchor = self.sizeStore.loadAnchor()
+        self.draftSizes = self.savedSizes
+        self.draftSizeAnchor = self.savedSizeAnchor
+        self.isSizeEditing = true
+        self.sizeEditingUpdated?()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    func endSizeEditing(save: Bool) {
+        guard self.isSizeEditing else {
+            return
+        }
+        if save, let draftSizes = self.draftSizes {
+            self.savedSizes = draftSizes
+            self.savedSizeAnchor = self.draftSizeAnchor
+            self.sizeStore.save(draftSizes, anchor: self.savedSizeAnchor)
+        }
+        self.resizingGift = nil
+        self.restoreResizingScroll()
+        self.draftSizes = nil
+        self.draftSizeAnchor = nil
+        self.isSizeEditing = false
+        self.sizeEditingUpdated?()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    private var sizeEditTransition: ComponentTransition {
+        return UIAccessibility.isReduceMotionEnabled ? .immediate : .spring(duration: 0.3)
+    }
+
+    private func restoreResizingScroll() {
+        self.resizingScrollView?.isScrollEnabled = self.resizingScrollWasEnabled
+        self.resizingScrollView = nil
+    }
+
+    private func resizeGift(key: String, gesture: UIPanGestureRecognizer) {
+        guard self.isSizeEditing, let geometry = self.tileGeometry[key] else {
+            return
+        }
+        switch gesture.state {
+        case .began:
+            guard self.resizingGift == nil else { return }
+            let initialSize = self.draftSizes?[key] ?? .standard
+            self.resizingGift = ResizingGift(key: key, initialFrame: geometry.frame, initialSize: initialSize, column: geometry.placement.column, row: geometry.placement.row, cellSize: geometry.cellSize, spacing: geometry.spacing, scope: self.sizeLayoutScope(columns: geometry.columns), growsInward: initialSize.width == 1 && geometry.placement.column == geometry.columns - 1, previewSize: geometry.frame.size, reservedSize: initialSize)
+            var ancestor = self.superview
+            while let view = ancestor {
+                if let scrollView = view as? UIScrollView {
+                    self.resizingScrollView = scrollView
+                    self.resizingScrollWasEnabled = scrollView.isScrollEnabled
+                    scrollView.isScrollEnabled = false
+                    break
+                }
+                ancestor = view.superview
+            }
+            HapticFeedback().tap()
+            self.sizeEditingUpdated?()
+            self.updateScrolling(transition: .immediate)
+        case .changed:
+            guard var resizingGift = self.resizingGift, resizingGift.key == key else { return }
+            let translation = gesture.translation(in: self)
+            let widthStep = resizingGift.cellSize.width + resizingGift.spacing
+            let heightStep = resizingGift.cellSize.height + resizingGift.spacing
+            let horizontalTranslation = resizingGift.growsInward ? -translation.x : translation.x
+            let previewSize = CGSize(width: min(resizingGift.cellSize.width + widthStep, max(resizingGift.cellSize.width, resizingGift.initialFrame.width + horizontalTranslation)), height: min(resizingGift.cellSize.height + heightStep, max(resizingGift.cellSize.height, resizingGift.initialFrame.height + translation.y)))
+            let snappedSize = GiftSizeLayout.snappedSize(width: Double(previewSize.width), height: Double(previewSize.height), cellWidth: Double(resizingGift.cellSize.width), cellHeight: Double(resizingGift.cellSize.height), spacing: Double(resizingGift.spacing))
+            let previousSize = self.draftSizes?[key] ?? .standard
+            let reservedSize = GiftTileSize(width: previewSize.width > resizingGift.cellSize.width + 1.0 ? 2 : 1, height: previewSize.height > resizingGift.cellSize.height + 1.0 ? 2 : 1)
+            let footprintChanged = reservedSize != resizingGift.reservedSize
+            resizingGift.previewSize = previewSize
+            resizingGift.reservedSize = reservedSize
+            self.resizingGift = resizingGift
+            self.draftSizes?[key] = snappedSize
+            if previousSize != snappedSize {
+                HapticFeedback().tap()
+            }
+            if footprintChanged {
+                self.updateScrolling(transition: self.sizeEditTransition)
+                self.onContentUpdated()
+            } else {
+                self.updateScrolling(transition: .immediate)
+            }
+        case .ended, .cancelled, .failed:
+            guard let resizingGift = self.resizingGift, resizingGift.key == key else { return }
+            if gesture.state == .ended {
+                let translation = gesture.translation(in: self)
+                let horizontalTranslation = resizingGift.growsInward ? -translation.x : translation.x
+                let snappedSize = GiftSizeLayout.snappedSize(width: Double(resizingGift.initialFrame.width + horizontalTranslation), height: Double(resizingGift.initialFrame.height + translation.y), cellWidth: Double(resizingGift.cellSize.width), cellHeight: Double(resizingGift.cellSize.height), spacing: Double(resizingGift.spacing))
+                self.draftSizes?[key] = snappedSize
+                self.draftSizeAnchor = GiftTileAnchor(key: key, scope: resizingGift.scope, column: min(geometry.columns - snappedSize.width, resizingGift.column), row: resizingGift.row)
+            } else {
+                self.draftSizes?[key] = resizingGift.initialSize
+            }
+            self.resizingGift = nil
+            self.restoreResizingScroll()
+            self.sizeEditingUpdated?()
+            self.updateScrolling(transition: self.sizeEditTransition)
+            self.onContentUpdated()
+        default:
+            break
+        }
+    }
+
+    private func setGiftSize(key: String, size: GiftTileSize) {
+        guard self.isSizeEditing, self.resizingGift == nil else { return }
+        self.draftSizes?[key] = size
+        if let geometry = self.tileGeometry[key] {
+            self.draftSizeAnchor = GiftTileAnchor(key: key, scope: self.sizeLayoutScope(columns: geometry.columns), column: max(0, min(geometry.columns - size.width, geometry.placement.column)), row: geometry.placement.row)
+        }
+        HapticFeedback().tap()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    private func sizeKey(for gift: ProfileGiftsContext.State.StarGift) -> String? {
+        if let reference = gift.reference {
+            switch reference {
+            case let .message(messageId):
+                return "m:\(messageId.peerId.toInt64()):\(messageId.namespace):\(messageId.id)"
+            case let .peer(peerId, id):
+                return "p:\(peerId.toInt64()):\(id)"
+            case let .slug(slug):
+                return "s:\(slug)"
+            }
+        } else if case let .unique(gift) = gift.gift {
+            return "u:\(gift.id)"
+        }
+        // A generic gift without a saved reference cannot be identified across reloads.
+        return nil
+    }
+
+    private func sizeLayoutScope(columns: Int) -> String {
+        let filter = self.profileGifts.currentState?.filter.rawValue ?? ProfileGiftsContext.Filters.All.rawValue
+        let sorting = self.profileGifts.currentState?.sorting == .value ? "value" : "date"
+        return "\(self.profileGifts.collectionId ?? 0):\(filter):\(sorting):\(columns)"
+    }
     
     @discardableResult
     private func updateScrolling(interactive: Bool = false, transition: ComponentTransition) -> CGFloat {
@@ -412,6 +598,9 @@ final class GiftsListView: UIView {
     }
     
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if let panel = self.sizeEditingPanel, !panel.isHidden, panel.frame.contains(point) {
+            return true
+        }
         if let topInset = self.topInset, point.y < topInset {
             return false
         }
@@ -443,15 +632,67 @@ final class GiftsListView: UIView {
         let defaultOptionWidth = (params.size.width - itemsSideInset * 2.0 - optionSpacing * CGFloat(defaultItemsInRow - 1)) / CGFloat(defaultItemsInRow)
         let optionWidth = (params.size.width - itemsSideInset * 2.0 - optionSpacing * CGFloat(itemsInRow - 1)) / CGFloat(itemsInRow)
         
-        let starsOptionSize = CGSize(width: optionWidth, height: defaultOptionWidth)
-                    
+        let cellSize = CGSize(width: self.canSelect ? optionWidth : defaultOptionWidth, height: defaultOptionWidth)
+        let columns = self.canSelect ? itemsInRow : defaultItemsInRow
+        let layoutScope = self.sizeLayoutScope(columns: columns)
+        if let resizingGift = self.resizingGift, resizingGift.scope != layoutScope {
+            self.draftSizes?[resizingGift.key] = resizingGift.initialSize
+            self.resizingGift = nil
+            self.restoreResizingScroll()
+            self.sizeEditingUpdated?()
+        }
+        let sizes = self.draftSizes ?? self.savedSizes
+        let tileSizes: [GiftTileSize] = starsProducts.map { product in
+            guard !self.canSelect, let key = self.sizeKey(for: product) else { return .standard }
+            return sizes[key] ?? .standard
+        }
+        var layoutSizes = tileSizes
+        var anchor: (index: Int, column: Int, row: Int)?
+        let storedAnchor = self.isSizeEditing ? self.draftSizeAnchor : self.savedSizeAnchor
+        if !self.canSelect, let storedAnchor, storedAnchor.scope == layoutScope, let index = starsProducts.firstIndex(where: { self.sizeKey(for: $0) == storedAnchor.key }) {
+            // Removing gifts may reduce the grid height; avoid preserving an empty gap.
+            anchor = (index, storedAnchor.column, min(storedAnchor.row, max(0, starsProducts.count * 2 - 1)))
+        }
+        if let resizingGift = self.resizingGift {
+            if let index = starsProducts.firstIndex(where: { self.sizeKey(for: $0) == resizingGift.key }) {
+                anchor = (index, resizingGift.column, resizingGift.row)
+                layoutSizes[index] = resizingGift.reservedSize
+            } else {
+                self.resizingGift = nil
+                self.restoreResizingScroll()
+                self.sizeEditingUpdated?()
+            }
+        }
+        let placements: [GiftTilePlacement]
+        if let cached = self.cachedTileLayout, cached.sizes == layoutSizes, cached.columns == columns, cached.anchorIndex == anchor?.index, cached.anchorColumn == anchor?.column, cached.anchorRow == anchor?.row {
+            placements = cached.placements
+        } else {
+            placements = GiftSizeLayout.arrange(sizes: layoutSizes, columns: columns, anchor: anchor)
+            self.cachedTileLayout = (layoutSizes, columns, anchor?.index, anchor?.column, anchor?.row, placements)
+        }
         var validIds: [AnyHashable] = []
-        var itemFrame = CGRect(origin: CGPoint(x: itemsSideInset, y: topInset), size: starsOptionSize)
-        
-        var index: Int32 = 0
-        for product in starsProducts {
+        var validHandleIds = Set<AnyHashable>()
+        self.tileGeometry.removeAll(keepingCapacity: true)
+        var gridBottom = topInset
+        for (index, product) in starsProducts.enumerated() {
+            let placement = placements[index]
+            let sizeKey = self.sizeKey(for: product)
+            var itemFrame = CGRect(x: itemsSideInset + CGFloat(placement.column) * (cellSize.width + optionSpacing), y: topInset + CGFloat(placement.row) * (cellSize.height + optionSpacing), width: CGFloat(placement.size.width) * cellSize.width + CGFloat(placement.size.width - 1) * optionSpacing, height: CGFloat(placement.size.height) * cellSize.height + CGFloat(placement.size.height - 1) * optionSpacing)
+            gridBottom = max(gridBottom, itemFrame.maxY)
+            let isResizing = sizeKey != nil && sizeKey == self.resizingGift?.key
+            if isResizing, let resizingGift = self.resizingGift {
+                var origin = resizingGift.initialFrame.origin
+                if resizingGift.growsInward {
+                    origin.x = resizingGift.initialFrame.maxX - resizingGift.previewSize.width
+                }
+                itemFrame = CGRect(origin: origin, size: resizingGift.previewSize)
+                gridBottom = max(gridBottom, itemFrame.maxY)
+            }
+            if let sizeKey {
+                self.tileGeometry[sizeKey] = (itemFrame, placement, columns, cellSize, optionSpacing)
+            }
             var isVisible = false
-            if visibleBounds.intersects(itemFrame) {
+            if visibleBounds.insetBy(dx: 0.0, dy: -44.0).intersects(itemFrame) || isResizing {
                 isVisible = true
             }
             
@@ -475,6 +716,10 @@ final class GiftsListView: UIView {
                 } else {
                     visibleItem = ComponentView()
                     self.starsItems[itemId] = (product.reference, visibleItem)
+                    itemTransition = .immediate
+                }
+                if isResizing {
+                    // The dragged card follows the finger; only neighbors animate.
                     itemTransition = .immediate
                 }
                 
@@ -567,6 +812,8 @@ final class GiftsListView: UIView {
                                     }
                                     self.selectionUpdated()
                                     self.updateScrolling(transition: .easeInOut(duration: 0.25))
+                                } else if self.isSizeEditing {
+                                    return
                                 } else if self.isReordering {
                                     if case .unique = product.gift, !product.pinnedToTop, let reference = product.reference, let items = self.starsProducts {
                                         if self.pinnedReferences.count >= self.maxPinnedCount {
@@ -691,7 +938,7 @@ final class GiftsListView: UIView {
                                     self.parentController?.push(controller)
                                 }
                             },
-                            contextAction: self.isReordering || self.canSelect ? nil : { [weak self] view, gesture in
+                            contextAction: self.isReordering || self.isSizeEditing || self.canSelect ? nil : { [weak self] view, gesture in
                                 guard let self else {
                                     return
                                 }
@@ -700,7 +947,7 @@ final class GiftsListView: UIView {
                         )
                     ),
                     environment: {},
-                    containerSize: starsOptionSize
+                    containerSize: itemFrame.size
                 )
                 if let itemView = visibleItem.view {
                     if itemView.superview == nil {
@@ -737,14 +984,33 @@ final class GiftsListView: UIView {
                             itemView.layer.removeAnimation(forKey: "shaking_rotation")
                         }
                     }
+                    if isResizing {
+                        self.bringSubviewToFront(itemView)
+                    }
+                    if self.isSizeEditing, let sizeKey {
+                        validHandleIds.insert(itemId)
+                        let handle: GiftResizeHandle
+                        if let current = self.resizeHandles[itemId] {
+                            handle = current
+                        } else {
+                            handle = GiftResizeHandle()
+                            handle.pan = { [weak self] gesture in self?.resizeGift(key: sizeKey, gesture: gesture) }
+                            handle.changeSize = { [weak self] size in self?.setGiftSize(key: sizeKey, size: size) }
+                            self.resizeHandles[itemId] = handle
+                            self.addSubview(handle)
+                        }
+                        handle.tileSize = tileSizes[index]
+                        handle.growsInward = tileSizes[index].width == 1 && placement.column == columns - 1
+                        handle.isUserInteractionEnabled = self.resizingGift == nil || isResizing
+                        itemTransition.setFrame(view: handle, frame: CGRect(x: itemFrame.maxX - 44.0, y: itemFrame.maxY - 44.0, width: 44.0, height: 44.0))
+                        self.bringSubviewToFront(handle)
+                    }
                 }
             }
-            itemFrame.origin.x += itemFrame.width + optionSpacing
-            if itemFrame.maxX > params.size.width {
-                itemFrame.origin.x = itemsSideInset
-                itemFrame.origin.y += starsOptionSize.height + optionSpacing
-            }
-            index += 1
+        }
+
+        for id in Array(self.resizeHandles.keys) where !validHandleIds.contains(id) {
+            self.resizeHandles.removeValue(forKey: id)?.removeFromSuperview()
         }
         
         var removeIds: [AnyHashable] = []
@@ -767,7 +1033,7 @@ final class GiftsListView: UIView {
             self.starsItems.removeValue(forKey: id)
         }
         
-        var contentHeight = ceil(CGFloat(starsProducts.count) / CGFloat(defaultItemsInRow)) * (starsOptionSize.height + optionSpacing) - optionSpacing + topInset + 16.0
+        var contentHeight = gridBottom + 16.0
         
         let size = params.size
         let sideInset = params.sideInset
@@ -1040,11 +1306,49 @@ final class GiftsListView: UIView {
                 })
             }
         }
+
+        if self.isSizeEditing {
+            let panel: GiftSizeEditingPanel
+            if let current = self.sizeEditingPanel {
+                panel = current
+            } else {
+                panel = GiftSizeEditingPanel()
+                panel.save = { [weak self] in self?.endSizeEditing(save: true) }
+                panel.cancel = { [weak self] in self?.endSizeEditing(save: false) }
+                self.sizeEditingPanel = panel
+                self.addSubview(panel)
+                if !UIAccessibility.isReduceMotionEnabled {
+                    panel.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2)
+                    panel.layer.animateScale(from: 0.94, to: 1.0, duration: 0.25)
+                }
+            }
+            panel.update(accentColor: presentationData.theme.list.itemAccentColor, textColor: presentationData.theme.list.itemPrimaryTextColor, backgroundColor: presentationData.theme.list.blocksBackgroundColor)
+            let panelHeight = panel.preferredHeight
+            let panelWidth = min(320.0, max(0.0, size.width - (sideInset + 16.0) * 2.0))
+            let panelBottomInset = max(bottomInset, self.safeAreaInsets.bottom) + 12.0
+            // visibleBounds is expanded by 10 points by the pane for preloading.
+            let panelFrame = CGRect(x: floorToScreenPixels((size.width - panelWidth) * 0.5), y: visibleBounds.maxY - 10.0 - panelBottomInset - panelHeight, width: panelWidth, height: panelHeight)
+            ComponentTransition.immediate.setFrame(view: panel, frame: panelFrame)
+            panel.isHidden = params.visibleHeight < 140.0
+            self.bringSubviewToFront(panel)
+            contentHeight += panelHeight + panelBottomInset + 12.0
+        } else if let panel = self.sizeEditingPanel {
+            self.sizeEditingPanel = nil
+            self.sizeEditTransition.setAlpha(view: panel, alpha: 0.0, completion: { _ in
+                panel.removeFromSuperview()
+            })
+        }
                         
         return contentHeight
     }
         
     func update(size: CGSize, sideInset: CGFloat, bottomInset: CGFloat, deviceMetrics: DeviceMetrics, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, presentationData: PresentationData, synchronous: Bool, visibleBounds: CGRect, transition: ContainedViewLayoutTransition) -> CGFloat {
+        if let resizingGift = self.resizingGift, self.currentParams?.size != size {
+            // A rotation invalidates gesture point coordinates; retain the draft before the drag.
+            self.draftSizes?[resizingGift.key] = resizingGift.initialSize
+            self.resizingGift = nil
+            self.restoreResizingScroll()
+        }
         self.currentParams = (size, sideInset, bottomInset, deviceMetrics, visibleHeight, isScrollingLockedAtTop, expandProgress, presentationData)
         self.presentationDataPromise.set(.single(presentationData))
         

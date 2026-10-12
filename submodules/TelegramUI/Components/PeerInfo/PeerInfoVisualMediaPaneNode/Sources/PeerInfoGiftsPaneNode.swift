@@ -173,6 +173,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             }
             self.contextAction(gift: gift, view: view, gesture: gesture)
         }
+        self.giftsListView.sizeEditingUpdated = { [weak self] in
+            self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
+        }
         self.giftsListView.displayUnpinScreen = { [weak self] gift, completion in
             guard let self else {
                 return
@@ -316,7 +319,21 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     }
     
     public func beginReordering() {
+        self.giftsListView.endSizeEditing(save: false)
         self.giftsListView.beginReordering()
+    }
+
+    public var resizeGiftsTitle: String {
+        let languageCode = self.currentParams?.presentationData.strings.primaryComponent.languageCode ?? "en"
+        return languageCode.hasPrefix("ru") ? "Изменить размеры подарков" : "Resize Gifts"
+    }
+
+    public var canResizeGifts: Bool {
+        return self.giftsListView.profileGifts.currentState?.filteredGifts.contains(where: { $0.reference != nil }) ?? false
+    }
+
+    public func beginSizeEditing() {
+        self.giftsListView.beginSizeEditing()
     }
     
     public func endReordering() {
@@ -422,6 +439,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         }
 
         let previousGiftsListView = self.giftsListView
+        previousGiftsListView.endSizeEditing(save: false)
         
         let profileGifts: ProfileGiftsContext
         switch collection {
@@ -467,6 +485,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                 return
             }
             self.contextAction(gift: gift, view: view, gesture: gesture)
+        }
+        self.giftsListView.sizeEditingUpdated = { [weak self] in
+            self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
         }
         self.giftsListView.parentController = self.parentController
         self.giftsListView.frame = previousGiftsListView.frame
@@ -740,7 +761,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             let panelContentContainer: UIView
             
             var panelVisibility = params.expandProgress < 1.0 ? 0.0 : 1.0
-            if !self.canGift || self.resultsAreEmpty {
+            if !self.canGift || self.resultsAreEmpty || self.giftsListView.isSizeEditing {
                 panelVisibility = 0.0
             }
             
@@ -988,6 +1009,16 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         }
         
         var items: [ContextMenuItem] = []
+        if gift.reference != nil {
+            items.append(.action(ContextMenuActionItem(text: self.resizeGiftsTitle, icon: { theme in
+                let configuration = UIImage.SymbolConfiguration(pointSize: 20.0, weight: .regular)
+                return UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: configuration)?.withTintColor(theme.contextMenu.primaryColor, renderingMode: .alwaysOriginal)
+            }, action: { [weak self] controller, _ in
+                controller?.dismiss(completion: { [weak self] in
+                    self?.beginSizeEditing()
+                })
+            })))
+        }
         if canManage {
             items.append(.action(ContextMenuActionItem(text: strings.PeerInfo_Gifts_Context_AddToCollection, textLayout: .twoLinesMax, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Peer Info/Gifts/AddToCollection"), color: theme.contextMenu.primaryColor) }, action: { [weak self] c, f in
                 var subItems: [ContextMenuItem] = []
@@ -1451,7 +1482,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         if isScrollingLockedAtTop {
             self.scrollNode.view.contentOffset = .zero
         }
-        self.scrollNode.view.isScrollEnabled = !isScrollingLockedAtTop
+        self.scrollNode.view.isScrollEnabled = !isScrollingLockedAtTop && !self.giftsListView.isResizingGift
         
         self.updateScrolling(transition: ComponentTransition(transition))
     }
