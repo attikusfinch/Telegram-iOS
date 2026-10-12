@@ -1602,7 +1602,7 @@ func _internal_transferStarGift(account: Account, prepaid: Bool, reference: Star
     |> castError(TransferStarGiftError.self)
     |> mapToSignal { inputPeerAndStarGift -> Signal<Never, TransferStarGiftError> in
         guard let (inputPeer, starGift) = inputPeerAndStarGift else {
-            return .complete()
+            return .fail(.generic)
         }
         if prepaid {
             return account.network.request(Api.functions.payments.transferStarGift(stargift: starGift, toId: inputPeer))
@@ -1976,8 +1976,13 @@ private final class ProfileGiftsContextImpl {
     }
     
     func reload() {
+        self.cacheDisposable.set(nil)
         self.gifts = []
+        self.count = nil
         self.dataState = .ready(canLoadMore: true, nextOffset: nil)
+        self.filteredGifts = []
+        self.filteredCount = nil
+        self.filteredDataState = .ready(canLoadMore: true, nextOffset: nil)
         self.loadMore(reload: true)
     }
     

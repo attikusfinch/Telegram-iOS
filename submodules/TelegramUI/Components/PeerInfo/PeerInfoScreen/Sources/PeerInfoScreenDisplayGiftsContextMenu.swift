@@ -15,6 +15,9 @@ extension PeerInfoScreenNode {
         guard let pane = self.paneContainerNode.currentPane?.node as? PeerInfoGiftsPaneNode else {
             return
         }
+        guard !pane.isBulkGiftOperationInProgress else {
+            return
+        }
         guard let controller = self.controller else {
             return
         }
@@ -53,6 +56,31 @@ extension PeerInfoScreenNode {
         })
         |> map { [weak pane, weak giftsContext, weak self] filter, sorting, canReorder -> ContextController.Items in
             var items: [ContextMenuItem] = []
+            if let pane, pane.isBulkSelectingGifts {
+                items.append(.action(ContextMenuActionItem(text: pane.cancelBulkGiftsTitle, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Select"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak pane] controller, _ in
+                    controller?.dismiss(completion: { [weak pane] in
+                        pane?.cancelBulkGiftSelection()
+                    })
+                })))
+            }
+            if let pane, pane.canBulkManageGifts {
+                items.append(.action(ContextMenuActionItem(text: pane.bulkTransferGiftsTitle, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Peer Info/TransferIcon"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak pane] controller, _ in
+                    controller?.dismiss(completion: { [weak pane] in
+                        pane?.beginBulkGiftTransfer()
+                    })
+                })))
+                items.append(.action(ContextMenuActionItem(text: pane.bulkUpgradeGiftsTitle, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Premium/GiftUpgrade"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak pane] controller, _ in
+                    controller?.dismiss(completion: { [weak pane] in
+                        pane?.beginBulkGiftUpgrade()
+                    })
+                })))
+            }
             if let pane, pane.canResizeGifts {
                 items.append(.action(ContextMenuActionItem(text: pane.resizeGiftsTitle, icon: { _ in
                     return generateTintedImage(image: UIImage(bundleImageName: "Peer Info/Gifts/Resize"), color: .white)

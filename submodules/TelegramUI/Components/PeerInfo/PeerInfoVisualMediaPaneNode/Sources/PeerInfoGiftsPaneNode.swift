@@ -36,6 +36,7 @@ import TextFormat
 import PromptUI
 import CollectionTabItemComponent
 import EdgeEffect
+import OverlayStatusController
 
 public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScrollViewDelegate {
     public enum GiftCollection: Equatable {
@@ -96,6 +97,12 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     private var panelContentContainer: UIView?
     private var panelButton: ComponentView<Empty>?
     private var panelCheck: ComponentView<Empty>?
+    private let bulkGiftDisposable = MetaDisposable()
+    private var bulkGiftBusy = false
+    private var bulkGiftExecuting = false
+    private var bulkGiftGeneration = 0
+    private var bulkGiftProgress: (completed: Int, total: Int)?
+    private var bulkGiftLoadingController: ViewController?
         
     private var currentParams: (size: CGSize, topInset: CGFloat, sideInset: CGFloat, bottomInset: CGFloat, deviceMetrics: DeviceMetrics, visibleHeight: CGFloat, isScrollingLockedAtTop: Bool, expandProgress: CGFloat, navigationHeight: CGFloat, presentationData: PresentationData)?
     
@@ -176,6 +183,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         self.giftsListView.sizeEditingUpdated = { [weak self] in
             self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
         }
+        self.giftsListView.bulkSelectionUpdated = { [weak self] in
+            self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
+        }
         self.giftsListView.displayUnpinScreen = { [weak self] gift, completion in
             guard let self else {
                 return
@@ -208,6 +218,8 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     
     deinit {
         self.collectionsDisposable?.dispose()
+        self.bulkGiftDisposable.dispose()
+        self.bulkGiftLoadingController?.dismiss()
     }
         
     public override func didLoad() {
@@ -319,6 +331,8 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     }
     
     public func beginReordering() {
+        guard !self.bulkGiftBusy else { return }
+        self.cancelBulkGiftSelection()
         self.giftsListView.endSizeEditing(save: false)
         self.giftsListView.beginReordering()
     }
@@ -329,11 +343,279 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     }
 
     public var canResizeGifts: Bool {
+        guard !self.bulkGiftBusy else { return false }
         return self.giftsListView.profileGifts.currentState?.filteredGifts.contains(where: { $0.reference != nil }) ?? false
     }
 
     public func beginSizeEditing() {
+        guard !self.bulkGiftBusy else { return }
         self.giftsListView.beginSizeEditing()
+    }
+
+    private var bulkGiftRussian: Bool {
+        return self.currentParams?.presentationData.strings.primaryComponent.languageCode.hasPrefix("ru") ?? false
+    }
+
+    public var canBulkManageGifts: Bool {
+        return self.peerId == self.context.account.peerId && !self.bulkGiftBusy
+    }
+
+    public var isBulkSelectingGifts: Bool {
+        return self.giftsListView.isBulkSelecting
+    }
+
+    public var isBulkGiftOperationInProgress: Bool {
+        return self.bulkGiftBusy
+    }
+
+    public var bulkTransferGiftsTitle: String {
+        return self.bulkGiftRussian ? "Отправить несколько подарков" : "Send Multiple Gifts"
+    }
+
+    public var bulkUpgradeGiftsTitle: String {
+        return self.bulkGiftRussian ? "Улучшить несколько подарков" : "Upgrade Multiple Gifts"
+    }
+
+    public var cancelBulkGiftsTitle: String {
+        return self.bulkGiftRussian ? "Отменить выбор" : "Cancel Selection"
+    }
+
+    public func beginBulkGiftTransfer() {
+        self.beginBulkGiftSelection(mode: .transfer)
+    }
+
+    public func beginBulkGiftUpgrade() {
+        self.beginBulkGiftSelection(mode: .upgrade)
+    }
+
+    private func beginBulkGiftSelection(mode: GiftBulkActionMode, initialGift: ProfileGiftsContext.State.StarGift? = nil) {
+        guard self.canBulkManageGifts else { return }
+        self.bulkGiftGeneration += 1
+        self.context.starsContext?.load(force: true)
+        self.giftsListView.beginBulkSelection(mode: mode, eligibility: { gift, mode in
+            return GiftBulkActions.isEligible(gift: gift, mode: mode, now: Int32(clamping: Int64(Date().timeIntervalSince1970)))
+        })
+        if let initialGift {
+            self.giftsListView.selectBulkGift(initialGift)
+        }
+        if let state = self.giftsListView.profileGifts.currentState,
+           case .ready(false, _) = state.dataState,
+           !state.filteredGifts.contains(where: { GiftBulkActions.isEligible(gift: $0, mode: mode, now: Int32(clamping: Int64(Date().timeIntervalSince1970))) }) {
+            self.giftsListView.endBulkSelection()
+            let text: String
+            if mode == .transfer {
+                text = self.bulkGiftRussian ? "Нет доступных для отправки коллекционных подарков. Некоторые подарки могут быть временно заблокированы для передачи." : "No collectible gifts are available to send. Some gifts may have a transfer cooldown."
+            } else {
+                text = self.bulkGiftRussian ? "Нет обычных подарков, доступных для улучшения. Коллекционные подарки уже улучшены." : "No regular gifts are available to upgrade. Collectible gifts are already upgraded."
+            }
+            self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Нет доступных подарков" : "No Available Gifts", text: text)
+        }
+    }
+
+    public func cancelBulkGiftSelection() {
+        guard !self.bulkGiftExecuting else { return }
+        self.bulkGiftGeneration += 1
+        self.bulkGiftDisposable.set(nil)
+        self.dismissBulkGiftLoading()
+        self.setBulkGiftBusy(false)
+        self.giftsListView.endBulkSelection()
+    }
+
+    private func setBulkGiftBusy(_ value: Bool) {
+        self.bulkGiftBusy = value
+        self.giftsListView.isUserInteractionEnabled = !value
+        self.tabSelector.view?.isUserInteractionEnabled = !value
+        self.updateScrolling(transition: .easeInOut(duration: 0.2))
+    }
+
+    private func dismissBulkGiftLoading() {
+        self.bulkGiftLoadingController?.dismiss()
+        self.bulkGiftLoadingController = nil
+    }
+
+    private func presentBulkGiftMessage(title: String, text: String) {
+        let strings = self.currentParams?.presentationData.strings ?? self.context.sharedContext.currentPresentationData.with { $0 }.strings
+        let controller = textAlertController(context: self.context, title: title, text: text, actions: [
+            TextAlertAction(type: .defaultAction, title: strings.Common_OK, action: {})
+        ])
+        self.parentController?.present(controller, in: .window(.root))
+    }
+
+    private func bulkGiftErrorText(_ error: GiftBulkActionError) -> String {
+        switch error {
+        case let .insufficientBalance(required):
+            return self.bulkGiftRussian ? "Недостаточно звёзд. Требуется \(required) ⭐." : "Not enough Stars. \(required) ⭐ is required."
+        case .balanceUnavailable:
+            return self.bulkGiftRussian ? "Не удалось получить баланс звёзд. Обновите баланс и попробуйте снова." : "Your Stars balance could not be loaded. Refresh your balance and try again."
+        case .recipientDisallowed:
+            return self.bulkGiftRussian ? "Получатель не принимает эти подарки." : "This recipient does not accept these gifts."
+        case .unavailableGift, .invalidSelection:
+            return self.bulkGiftRussian ? "Один из выбранных подарков больше недоступен. Обновите список и выберите подарки заново." : "A selected gift is no longer available. Refresh the list and select the gifts again."
+        case .invalidRecipient:
+            return self.bulkGiftRussian ? "Выберите другого получателя." : "Choose another recipient."
+        case .invalidPrice:
+            return self.bulkGiftRussian ? "Не удалось подтвердить стоимость. Действия с подарками не запущены." : "The price could not be verified. Gift actions have not started."
+        case .timedOut, .generic:
+            return self.bulkGiftRussian ? "Не удалось подтвердить результат последнего действия. Проверьте подарок и историю операций перед повторной попыткой." : "The last action could not be confirmed. Check the gift and transaction history before trying again."
+        case .verificationRequired:
+            return self.bulkGiftRussian ? "Для платежа требуется дополнительное подтверждение. Очередь остановлена." : "The payment requires additional verification. The queue has stopped."
+        }
+    }
+
+    private func bulkGiftActionPressed() {
+        guard !self.bulkGiftBusy, let mode = self.giftsListView.bulkSelectionMode else { return }
+        let gifts = self.giftsListView.selectedBulkGifts
+        guard !gifts.isEmpty else { return }
+        if mode == .upgrade {
+            self.prepareBulkGifts(gifts: gifts, mode: mode, recipient: nil)
+        } else {
+            let generation = self.bulkGiftGeneration
+            let controller = self.context.sharedContext.makePeerSelectionController(PeerSelectionControllerParams(
+                context: self.context,
+                filter: [.excludeSecretChats, .excludeSavedMessages, .excludeBots, .excludeGroups, .excludeChannels, .doNotSearchMessages],
+                requestPeerType: [.user(.init(isBot: false, isPremium: nil))],
+                title: self.bulkGiftRussian ? "Кому отправить подарки?" : "Send Gifts To",
+                multipleSelection: false,
+                hasCreation: false,
+                excludedPeerIds: [self.context.account.peerId]
+            ))
+            controller.peerSelected = { [weak self, weak controller] recipient, _ in
+                guard let self, self.bulkGiftGeneration == generation, !self.bulkGiftBusy, self.giftsListView.bulkSelectionMode == .transfer else { return }
+                controller?.dismiss()
+                Queue.mainQueue().after(0.2, { [weak self] in
+                    guard let self, self.bulkGiftGeneration == generation, self.giftsListView.bulkSelectionMode == .transfer else { return }
+                    self.prepareBulkGifts(gifts: self.giftsListView.selectedBulkGifts, mode: .transfer, recipient: recipient)
+                })
+            }
+            self.parentController?.present(controller, in: .window(.root))
+        }
+    }
+
+    private func prepareBulkGifts(gifts: [ProfileGiftsContext.State.StarGift], mode: GiftBulkActionMode, recipient: EnginePeer?) {
+        guard !self.bulkGiftBusy, !gifts.isEmpty, self.giftsListView.bulkSelectionMode == mode else { return }
+        self.bulkGiftGeneration += 1
+        let generation = self.bulkGiftGeneration
+        self.bulkGiftProgress = nil
+        self.setBulkGiftBusy(true)
+        let theme = self.context.sharedContext.currentPresentationData.with { $0 }.theme
+        let loading = OverlayStatusController(style: theme.actionSheet.backgroundType == .light ? .light : .dark, type: .loading(cancelled: { [weak self] in
+            guard let self, !self.bulkGiftExecuting, self.bulkGiftGeneration == generation else { return }
+            self.bulkGiftGeneration += 1
+            self.bulkGiftDisposable.set(nil)
+            self.dismissBulkGiftLoading()
+            self.setBulkGiftBusy(false)
+        }))
+        loading.blocksBackgroundWhenInOverlay = true
+        self.bulkGiftLoadingController = loading
+        self.parentController?.present(loading, in: .window(.root))
+        self.bulkGiftDisposable.set((GiftBulkActions.prepare(context: self.context, gifts: gifts, mode: mode, recipientId: recipient?.id, keepOriginalInfo: true)
+        |> deliverOnMainQueue).start(next: { [weak self] quote in
+            guard let self, self.bulkGiftGeneration == generation else { return }
+            self.dismissBulkGiftLoading()
+            Queue.mainQueue().after(0.2, { [weak self] in
+                guard let self, self.bulkGiftGeneration == generation, self.bulkGiftBusy else { return }
+                self.confirmBulkGifts(quote: quote, recipientName: recipient?.debugDisplayTitle, generation: generation)
+            })
+        }, error: { [weak self] error in
+            guard let self, self.bulkGiftGeneration == generation else { return }
+            self.dismissBulkGiftLoading()
+            self.setBulkGiftBusy(false)
+            Queue.mainQueue().after(0.2, { [weak self] in
+                guard let self, self.bulkGiftGeneration == generation else { return }
+                let text: String
+                if error == .generic || error == .timedOut {
+                    text = self.bulkGiftRussian ? "Не удалось получить стоимость. Действия с подарками не запущены. Попробуйте снова." : "The price could not be loaded. Gift actions have not started. Try again."
+                } else {
+                    text = self.bulkGiftErrorText(error)
+                }
+                self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Не удалось подготовить подарки" : "Could Not Prepare Gifts", text: text)
+            })
+        }))
+    }
+
+    private func confirmBulkGifts(quote: GiftBulkQuote, recipientName: String?, generation: Int) {
+        let count = quote.items.count
+        let title: String
+        let text: String
+        let actionTitle: String
+        if quote.mode == .transfer {
+            title = self.bulkGiftRussian ? (count == 1 ? "Отправить подарок?" : "Отправить подарки (\(count))?") : "Send \(count) \(count == 1 ? "Gift" : "Gifts")?"
+            text = self.bulkGiftRussian ? "Получатель: \(recipientName ?? "").\nОбщая комиссия: \(quote.totalCost) ⭐.\n\nВсе выбранные подарки будут переданы получателю и исчезнут из вашего профиля." : "Recipient: \(recipientName ?? "").\nTotal fee: \(quote.totalCost) ⭐.\n\nAll selected gifts will be transferred to this recipient and removed from your profile."
+            actionTitle = self.bulkGiftRussian ? "Отправить" : "Send"
+        } else {
+            title = self.bulkGiftRussian ? (count == 1 ? "Улучшить подарок?" : "Улучшить подарки (\(count))?") : "Upgrade \(count) \(count == 1 ? "Gift" : "Gifts")?"
+            text = self.bulkGiftRussian ? "Общая стоимость: \(quote.totalCost) ⭐.\nУже оплаченные улучшения учтены бесплатно.\n\nСохраним доступные данные отправителей и сообщения. Скрытые сведения не сохраняются." : "Total cost: \(quote.totalCost) ⭐.\nPrepaid upgrades are included at no extra cost.\n\nAvailable sender details and messages will be kept. Hidden details are not retained."
+            actionTitle = self.bulkGiftRussian ? "Улучшить" : "Upgrade"
+        }
+        let strings = self.currentParams?.presentationData.strings ?? self.context.sharedContext.currentPresentationData.with { $0 }.strings
+        let controller = textAlertController(context: self.context, title: title, text: text, actions: [
+            TextAlertAction(type: .genericAction, title: strings.Common_Cancel, action: { [weak self] in
+                guard let self, self.bulkGiftGeneration == generation else { return }
+                self.bulkGiftGeneration += 1
+                self.setBulkGiftBusy(false)
+            }),
+            TextAlertAction(type: .defaultAction, title: actionTitle, action: { [weak self] in
+                guard let self, self.bulkGiftGeneration == generation, self.bulkGiftBusy, !self.bulkGiftExecuting else { return }
+                self.executeBulkGifts(quote: quote)
+            })
+        ], actionLayout: .vertical, dismissOnOutsideTap: false)
+        self.parentController?.present(controller, in: .window(.root))
+    }
+
+    private func executeBulkGifts(quote: GiftBulkQuote) {
+        let selected = Set(self.giftsListView.selectedBulkGifts.compactMap(\.reference))
+        guard quote.items.allSatisfy({ selected.contains($0.reference) }) else {
+            self.setBulkGiftBusy(false)
+            self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Подарки изменились" : "Gifts Changed", text: self.bulkGiftErrorText(.unavailableGift))
+            return
+        }
+        self.bulkGiftExecuting = true
+        self.bulkGiftProgress = (0, quote.items.count)
+        self.updateScrolling(transition: .immediate)
+        let activeContext = self.giftsListView.profileGifts
+        let theme = self.context.sharedContext.currentPresentationData.with { $0 }.theme
+        let loading = OverlayStatusController(style: theme.actionSheet.backgroundType == .light ? .light : .dark, type: .loading(cancelled: nil))
+        loading.blocksBackgroundWhenInOverlay = true
+        self.bulkGiftLoadingController = loading
+        self.parentController?.present(loading, in: .window(.root))
+        var removedCount = 0
+        // Keep the confirmed queue alive until its final result, including navigation changes.
+        self.bulkGiftDisposable.set((GiftBulkActions.execute(context: self.context, profileGifts: activeContext, quote: quote)
+        |> deliverOnMainQueue).start(next: { [self] progress in
+            if quote.mode == .transfer, progress.completed > removedCount {
+                let references = quote.items[removedCount ..< progress.completed].map(\.reference)
+                activeContext.removeStarGifts(references: references)
+                if activeContext !== self.profileGifts {
+                    self.profileGifts.removeStarGifts(references: references)
+                }
+                removedCount = progress.completed
+            }
+            self.bulkGiftProgress = (progress.completed, progress.total)
+            self.updateScrolling(transition: .immediate)
+            guard progress.isFinished else { return }
+            self.bulkGiftExecuting = false
+            self.bulkGiftProgress = nil
+            self.dismissBulkGiftLoading()
+            self.setBulkGiftBusy(false)
+            self.giftsListView.endBulkSelection()
+            self.context.starsContext?.load(force: true)
+            activeContext.reload()
+            if activeContext !== self.profileGifts {
+                self.profileGifts.reload()
+            }
+            Queue.mainQueue().after(0.2, { [weak self] in
+                guard let self else { return }
+                if let error = progress.error {
+                    let summary = self.bulkGiftRussian ? "Подтверждено: \(progress.completed) из \(progress.total).\nОстальные действия остановлены.\n\n" : "Confirmed: \(progress.completed) of \(progress.total).\nThe remaining actions have stopped.\n\n"
+                    self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Очередь остановлена" : "Queue Stopped", text: summary + self.bulkGiftErrorText(error))
+                } else {
+                    let text = quote.mode == .transfer
+                        ? (self.bulkGiftRussian ? "Подарков отправлено: \(progress.completed)." : "Gifts sent: \(progress.completed).")
+                        : (self.bulkGiftRussian ? "Подарков улучшено: \(progress.completed)." : "Gifts upgraded: \(progress.completed).")
+                    self.presentBulkGiftMessage(title: self.bulkGiftRussian ? "Готово" : "Done", text: text)
+                }
+            })
+        }))
     }
     
     public func endReordering() {
@@ -424,7 +706,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
     }
     
     func setCurrentCollection(collection: GiftCollection) {
-        guard self.currentCollection != collection else {
+        guard !self.bulkGiftBusy, self.currentCollection != collection else {
             return
         }
         var animateRight = false
@@ -440,6 +722,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
 
         let previousGiftsListView = self.giftsListView
         previousGiftsListView.endSizeEditing(save: false)
+        previousGiftsListView.endBulkSelection()
         
         let profileGifts: ProfileGiftsContext
         switch collection {
@@ -487,6 +770,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             self.contextAction(gift: gift, view: view, gesture: gesture)
         }
         self.giftsListView.sizeEditingUpdated = { [weak self] in
+            self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
+        }
+        self.giftsListView.bulkSelectionUpdated = { [weak self] in
             self?.updateScrolling(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.2))
         }
         self.giftsListView.parentController = self.parentController
@@ -760,9 +1046,13 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             let panelEdgeEffectView: EdgeEffectView
             let panelContentContainer: UIView
             let isSizeEditing = self.giftsListView.isSizeEditing
+            let isBulkSelecting = self.giftsListView.isBulkSelecting
+            let isEditingTool = isSizeEditing || isBulkSelecting
+            let selectedBulkCount = self.giftsListView.selectedBulkGifts.count
+            let panelButtonEnabled = !self.bulkGiftBusy && (!isBulkSelecting || selectedBulkCount > 0)
             
-            var panelVisibility: CGFloat = isSizeEditing || params.expandProgress >= 1.0 ? 1.0 : 0.0
-            if !isSizeEditing && (!self.canGift || self.resultsAreEmpty) {
+            var panelVisibility: CGFloat = isEditingTool || params.expandProgress >= 1.0 ? 1.0 : 0.0
+            if !isEditingTool && (!self.canGift || self.resultsAreEmpty) {
                 panelVisibility = 0.0
             }
             
@@ -797,7 +1087,19 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             
             let buttonTitle: String
             var buttonIconName: String?
-            if isSizeEditing {
+            if isBulkSelecting {
+                if let progress = self.bulkGiftProgress {
+                    buttonTitle = self.bulkGiftRussian ? "Готово \(progress.completed) из \(progress.total)" : "Completed \(progress.completed) of \(progress.total)"
+                } else if self.bulkGiftBusy {
+                    buttonTitle = self.bulkGiftRussian ? "Проверяем стоимость…" : "Checking Prices…"
+                } else if selectedBulkCount == 0 {
+                    buttonTitle = self.bulkGiftRussian ? "Выберите подарки" : "Select Gifts"
+                } else if self.giftsListView.bulkSelectionMode == .transfer {
+                    buttonTitle = self.bulkGiftRussian ? "Отправить (\(selectedBulkCount))" : "Send Gifts (\(selectedBulkCount))"
+                } else {
+                    buttonTitle = self.bulkGiftRussian ? "Улучшить (\(selectedBulkCount))" : "Upgrade Gifts (\(selectedBulkCount))"
+                }
+            } else if isSizeEditing {
                 buttonTitle = "Save Grid"
             } else if self.peerId == self.context.account.peerId {
                 if case .all = self.currentCollection {
@@ -837,12 +1139,14 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                             id: AnyHashable(buttonTitle),
                             component: buttonTitleContent
                         ),
-                        isEnabled: true,
+                        isEnabled: panelButtonEnabled,
                         action: { [weak self] in
-                            guard let self else {
+                            guard let self, !self.bulkGiftBusy else {
                                 return
                             }
-                            if self.giftsListView.isSizeEditing {
+                            if self.giftsListView.isBulkSelecting {
+                                self.bulkGiftActionPressed()
+                            } else if self.giftsListView.isSizeEditing {
                                 self.giftsListView.endSizeEditing(save: true)
                             } else {
                                 self.buttonPressed()
@@ -871,13 +1175,14 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                 panelButtonView.isAccessibilityElement = false
                 if let button = panelButtonView.subviews.first(where: { $0 is UIButton }) as? UIButton {
                     button.isAccessibilityElement = true
-                    button.accessibilityTraits = .button
+                    button.accessibilityTraits = panelButtonEnabled ? [.button] : [.button, .notEnabled]
                     button.accessibilityLabel = buttonTitle
+                    button.accessibilityIdentifier = isBulkSelecting ? "ProfileGifts.BulkAction" : (isSizeEditing ? "ProfileGifts.SaveGrid" : "ProfileGifts.SendGift")
                 }
             }
             
             let panelBottom: CGFloat
-            if isSizeEditing, let parentController = self.parentController {
+            if isEditingTool, let parentController = self.parentController {
                 // Keep Save reachable while the profile header is still visible.
                 panelBottom = max(0.0, min(size.height, self.view.convert(parentController.view.bounds, from: parentController.view).maxY))
             } else {
@@ -885,7 +1190,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             }
             panelTransition.setFrame(view: panelContentContainer, frame: CGRect(origin: CGPoint(x: 0.0, y: panelBottom - bottomPanelHeight), size: CGSize(width: size.width, height: bottomPanelHeight)))
             
-            if self.canManage && !isSizeEditing {
+            if self.canManage && !isEditingTool {
                 let panelCheck: ComponentView<Empty>
                 if let current = self.panelCheck {
                     panelCheck = current
@@ -1039,6 +1344,27 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         
         var items: [ContextMenuItem] = []
         if gift.reference != nil {
+            if self.canBulkManageGifts {
+                let now = Int32(clamping: Int64(Date().timeIntervalSince1970))
+                if GiftBulkActions.isEligible(gift: gift, mode: .transfer, now: now) {
+                    items.append(.action(ContextMenuActionItem(text: self.bulkTransferGiftsTitle, icon: { theme in
+                        return generateTintedImage(image: UIImage(bundleImageName: "Peer Info/TransferIcon"), color: theme.contextMenu.primaryColor)
+                    }, action: { [weak self] controller, _ in
+                        controller?.dismiss(completion: { [weak self] in
+                            self?.beginBulkGiftSelection(mode: .transfer, initialGift: gift)
+                        })
+                    })))
+                }
+                if GiftBulkActions.isEligible(gift: gift, mode: .upgrade, now: now) {
+                    items.append(.action(ContextMenuActionItem(text: self.bulkUpgradeGiftsTitle, icon: { theme in
+                        return generateTintedImage(image: UIImage(bundleImageName: "Premium/GiftUpgrade"), color: theme.contextMenu.primaryColor)
+                    }, action: { [weak self] controller, _ in
+                        controller?.dismiss(completion: { [weak self] in
+                            self?.beginBulkGiftSelection(mode: .upgrade, initialGift: gift)
+                        })
+                    })))
+                }
+            }
             items.append(.action(ContextMenuActionItem(text: self.resizeGiftsTitle, icon: { _ in
                 return generateTintedImage(image: UIImage(bundleImageName: "Peer Info/Gifts/Resize"), color: .white)
             }, action: { [weak self] controller, _ in
@@ -1510,7 +1836,7 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         if isScrollingLockedAtTop {
             self.scrollNode.view.contentOffset = .zero
         }
-        self.scrollNode.view.isScrollEnabled = !isScrollingLockedAtTop && !self.giftsListView.isResizingGift
+        self.scrollNode.view.isScrollEnabled = !isScrollingLockedAtTop && !self.giftsListView.isResizingGift && !self.bulkGiftBusy
         
         self.updateScrolling(transition: ComponentTransition(transition))
     }

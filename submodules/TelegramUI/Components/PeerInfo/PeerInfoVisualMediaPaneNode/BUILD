@@ -43,6 +43,7 @@ swift_library(
         "//submodules/TelegramUI/Components/PeerInfo/PeerInfoPaneNode",
         "//submodules/ShareController",
         "//submodules/UndoUI",
+        "//submodules/OverlayStatusController",
         "//submodules/TelegramUI/Components/PlainButtonComponent",
         "//submodules/Components/ComponentDisplayAdapters",
         "//submodules/TelegramUI/Components/MediaEditorScreen",

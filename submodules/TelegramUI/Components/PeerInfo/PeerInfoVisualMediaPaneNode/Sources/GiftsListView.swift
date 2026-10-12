@@ -27,6 +27,12 @@ import UndoUI
 import LottieComponent
 import ButtonComponent
 import ContextUI
+import CheckNode
+
+enum GiftBulkActionMode: Equatable {
+    case transfer
+    case upgrade
+}
 
 final class GiftsListView: UIView {
     private let context: AccountContext
@@ -99,6 +105,41 @@ final class GiftsListView: UIView {
     private(set) var isSizeEditing: Bool = false
     var isResizingGift: Bool { return self.resizingGift != nil }
     var sizeEditingUpdated: (() -> Void)?
+
+    private(set) var bulkSelectionMode: GiftBulkActionMode?
+    var isBulkSelecting: Bool { return self.bulkSelectionMode != nil }
+    var bulkSelectionUpdated: (() -> Void)?
+    private var bulkSelectionEligibility: ((ProfileGiftsContext.State.StarGift, GiftBulkActionMode) -> Bool)?
+    private var selectedBulkReferences = Set<StarGiftReference>()
+    private var bulkSelectionOverlays: [AnyHashable: GiftBulkSelectionOverlay] = [:]
+
+    var selectedBulkGifts: [ProfileGiftsContext.State.StarGift] {
+        guard let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility else {
+            return []
+        }
+        return self.bulkSelectionSourceGifts(state: self.profileGifts.currentState).filter { gift in
+            guard let reference = gift.reference, self.selectedBulkReferences.contains(reference), eligibility(gift, mode) else {
+                return false
+            }
+            return true
+        }
+    }
+
+    private func bulkSelectionSourceGifts(state: ProfileGiftsContext.State?) -> [ProfileGiftsContext.State.StarGift] {
+        let source: [ProfileGiftsContext.State.StarGift]
+        if let state {
+            // Filtered pages can be loaded independently of the main list. Prefer
+            // their current versions and visible order when a reference is in both.
+            source = state.filteredGifts + state.gifts
+        } else {
+            source = self.starsProducts ?? []
+        }
+        var seenReferences = Set<StarGiftReference>()
+        return source.filter { gift in
+            guard let reference = gift.reference else { return false }
+            return seenReferences.insert(reference).inserted
+        }
+    }
 
     private(set) var resultsAreEmpty = false
     private var filteredResultsAreEmpty = false
@@ -223,6 +264,21 @@ final class GiftsListView: UIView {
                 self.starsProducts = state.filteredGifts
                 self.pinnedReferences = Array(state.gifts.filter { $0.pinnedToTop }.compactMap { $0.reference })
             }
+
+            if let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility {
+                // Reload clears both arrays before the next page arrives. Keep the
+                // references through that transient state rather than losing checks.
+                if case .ready = state.dataState {
+                    let validReferences = Set(self.bulkSelectionSourceGifts(state: state).compactMap { gift -> StarGiftReference? in
+                        return eligibility(gift, mode) ? gift.reference : nil
+                    })
+                    let previousReferences = self.selectedBulkReferences
+                    self.selectedBulkReferences.formIntersection(validReferences)
+                    if previousReferences != self.selectedBulkReferences {
+                        self.bulkSelectionUpdated?()
+                    }
+                }
+            }
             
             self.resultsAreEmpty = state.filter == .All && state.gifts.isEmpty && state.dataState != .loading
             self.filteredResultsAreEmpty = state.filter != .All && state.filteredGifts.isEmpty
@@ -297,6 +353,7 @@ final class GiftsListView: UIView {
     }
         
     func beginReordering() {
+        self.endBulkSelection()
         if self.isSizeEditing {
             self.endSizeEditing(save: false)
         }
@@ -319,6 +376,9 @@ final class GiftsListView: UIView {
     }
     
     func updateIsReordering(isReordering: Bool, animated: Bool) {
+        if isReordering {
+            self.endBulkSelection()
+        }
         if isReordering && self.isSizeEditing {
             self.endSizeEditing(save: false)
         }
@@ -445,10 +505,69 @@ final class GiftsListView: UIView {
         self.profileGifts.loadMore()
     }
 
+    func beginBulkSelection(mode: GiftBulkActionMode, eligibility: @escaping (ProfileGiftsContext.State.StarGift, GiftBulkActionMode) -> Bool) {
+        guard !self.canSelect else {
+            return
+        }
+        if self.isSizeEditing {
+            self.endSizeEditing(save: false)
+        }
+        if self.isReordering {
+            // Switching tools discards an unfinished reorder rather than submitting it.
+            self.reorderingItem = nil
+            self.reorderedReferences = nil
+            self.reorderedPinnedReferences = nil
+            self.endReordering()
+            self.starsProducts = self.profileGifts.currentState?.filteredGifts
+        }
+        self.bulkSelectionMode = mode
+        self.bulkSelectionEligibility = eligibility
+        self.selectedBulkReferences.removeAll()
+        self.bulkSelectionUpdated?()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    func endBulkSelection() {
+        guard self.isBulkSelecting else {
+            return
+        }
+        self.bulkSelectionMode = nil
+        self.bulkSelectionEligibility = nil
+        self.selectedBulkReferences.removeAll()
+        self.bulkSelectionUpdated?()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    func selectBulkGift(_ gift: ProfileGiftsContext.State.StarGift) {
+        guard let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility,
+              let reference = gift.reference, eligibility(gift, mode),
+              self.selectedBulkReferences.insert(reference).inserted else { return }
+        self.bulkSelectionUpdated?()
+        self.updateScrolling(transition: self.sizeEditTransition)
+        self.onContentUpdated()
+    }
+
+    private func toggleBulkGift(_ gift: ProfileGiftsContext.State.StarGift) {
+        guard let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility, let reference = gift.reference, eligibility(gift, mode) else {
+            return
+        }
+        if self.selectedBulkReferences.contains(reference) {
+            self.selectedBulkReferences.remove(reference)
+        } else {
+            self.selectedBulkReferences.insert(reference)
+        }
+        HapticFeedback().tap()
+        self.bulkSelectionUpdated?()
+        self.updateScrolling(transition: .easeInOut(duration: 0.2))
+    }
+
     func beginSizeEditing() {
         guard !self.canSelect, !self.isSizeEditing else {
             return
         }
+        self.endBulkSelection()
         if self.isReordering {
             self.endReordering()
         }
@@ -674,6 +793,7 @@ final class GiftsListView: UIView {
         }
         var validIds: [AnyHashable] = []
         var validHandleIds = Set<AnyHashable>()
+        var validBulkOverlayIds = Set<AnyHashable>()
         self.tileGeometry.removeAll(keepingCapacity: true)
         var gridBottom = topInset
         for (index, product) in starsProducts.enumerated() {
@@ -773,6 +893,14 @@ final class GiftsListView: UIView {
                 }
                 
                 let itemReferenceId = product.reference?.stringValue ?? ""
+
+                let isBulkEligible: Bool
+                if let mode = self.bulkSelectionMode, let eligibility = self.bulkSelectionEligibility {
+                    isBulkEligible = product.reference != nil && eligibility(product, mode)
+                } else {
+                    isBulkEligible = false
+                }
+                let isBulkSelected = product.reference.map { self.selectedBulkReferences.contains($0) } ?? false
                 
                 var isAdded = false
                 if let ignoreCollection = self.ignoreCollection, let collectionIds = product.collectionIds, collectionIds.contains(ignoreCollection) {
@@ -782,6 +910,8 @@ final class GiftsListView: UIView {
                 var itemAlpha: CGFloat = 1.0
                 if isAdded {
                     itemAlpha = 0.3
+                } else if self.isBulkSelecting && !isBulkEligible {
+                    itemAlpha = 0.35
                 }
                 
                 let _ = visibleItem.update(
@@ -797,15 +927,17 @@ final class GiftsListView: UIView {
                             ribbon: ribbonText.flatMap { GiftItemComponent.Ribbon(text: $0, font: ribbonFont, color: ribbonColor, outline: ribbonOutline) },
                             resellPrice: resellAmount?.amount.value,
                             isHidden: !product.savedToProfile,
-                            isSelected: self.selectedItemIds.contains(itemReferenceId),
-                            isPinned: !self.canSelect && product.pinnedToTop,
+                            isSelected: self.isBulkSelecting ? isBulkSelected : self.selectedItemIds.contains(itemReferenceId),
+                            isPinned: !self.canSelect && !self.isBulkSelecting && product.pinnedToTop,
                             isEditing: self.isReordering && !self.isCollection,
                             mode: self.canSelect && !isAdded ? .select : .profile,
                             action: { [weak self] in
                                 guard let self, !isAdded, let presentationData = self.currentParams?.presentationData else {
                                     return
                                 }
-                                if self.canSelect {
+                                if self.isBulkSelecting {
+                                    self.toggleBulkGift(product)
+                                } else if self.canSelect {
                                     if self.selectedItemIds.contains(itemReferenceId) {
                                         self.selectedItemIds.remove(itemReferenceId)
                                     } else {
@@ -942,7 +1074,7 @@ final class GiftsListView: UIView {
                                     self.parentController?.push(controller)
                                 }
                             },
-                            contextAction: self.isReordering || self.isSizeEditing || self.canSelect ? nil : { [weak self] view, gesture in
+                            contextAction: self.isReordering || self.isSizeEditing || self.isBulkSelecting || self.canSelect ? nil : { [weak self] view, gesture in
                                 guard let self else {
                                     return
                                 }
@@ -954,6 +1086,7 @@ final class GiftsListView: UIView {
                     containerSize: itemFrame.size
                 )
                 if let itemView = visibleItem.view {
+                    itemView.isUserInteractionEnabled = !isAdded && (!self.isBulkSelecting || isBulkEligible)
                     if itemView.superview == nil {
                         self.addSubview(itemView)
                         
@@ -991,6 +1124,34 @@ final class GiftsListView: UIView {
                     if isResizing {
                         self.bringSubviewToFront(itemView)
                     }
+                    if self.isBulkSelecting && isBulkEligible {
+                        validBulkOverlayIds.insert(itemId)
+                        let overlay: GiftBulkSelectionOverlay
+                        if let current = self.bulkSelectionOverlays[itemId] {
+                            overlay = current
+                        } else {
+                            overlay = GiftBulkSelectionOverlay()
+                            self.bulkSelectionOverlays[itemId] = overlay
+                        }
+                        let isUnique: Bool
+                        let accessibilityTitle: String
+                        switch product.gift {
+                        case let .generic(gift):
+                            isUnique = false
+                            accessibilityTitle = gift.title ?? params.presentationData.strings.Gift_View_Title
+                        case let .unique(gift):
+                            isUnique = true
+                            accessibilityTitle = "\(gift.title) #\(gift.number)"
+                        }
+                        overlay.update(theme: params.presentationData.theme, isUnique: isUnique, isSelected: isBulkSelected, title: accessibilityTitle, animated: !itemTransition.animation.isImmediate, action: { [weak self] in
+                            self?.toggleBulkGift(product)
+                        })
+                        if overlay.superview !== itemView {
+                            itemView.addSubview(overlay)
+                        }
+                        overlay.frame = CGRect(origin: .zero, size: itemFrame.size)
+                        itemView.bringSubviewToFront(overlay)
+                    }
                     if self.isSizeEditing, let sizeKey {
                         validHandleIds.insert(itemId)
                         let handle: GiftResizeHandle
@@ -1015,6 +1176,9 @@ final class GiftsListView: UIView {
 
         for id in Array(self.resizeHandles.keys) where !validHandleIds.contains(id) {
             self.resizeHandles.removeValue(forKey: id)?.removeFromSuperview()
+        }
+        for id in Array(self.bulkSelectionOverlays.keys) where !validBulkOverlayIds.contains(id) {
+            self.bulkSelectionOverlays.removeValue(forKey: id)?.removeFromSuperview()
         }
         
         var removeIds: [AnyHashable] = []
@@ -1326,6 +1490,51 @@ final class GiftsListView: UIView {
         self.presentationDataPromise.set(.single(presentationData))
         
         return self.updateScrolling(topInset: self.topInset ?? 0.0, visibleBounds: visibleBounds, transition: ComponentTransition(transition))
+    }
+}
+
+private final class GiftBulkSelectionOverlay: UIButton {
+    private var checkLayer: CheckLayer?
+    private var action: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        self.isAccessibilityElement = true
+        self.addTarget(self, action: #selector(self.pressed), for: .touchUpInside)
+    }
+
+    required init?(coder: NSCoder) {
+        preconditionFailure()
+    }
+
+    func update(theme: PresentationTheme, isUnique: Bool, isSelected: Bool, title: String, animated: Bool, action: @escaping () -> Void) {
+        self.action = action
+        self.accessibilityLabel = title
+        self.accessibilityTraits = isSelected ? [.button, .selected] : [.button]
+
+        let checkTheme = CheckNodeTheme(theme: theme, style: isUnique ? .overlay : .plain)
+        var checkFrame = CGRect(x: 4.0, y: 4.0, width: 26.0, height: 26.0)
+        if !isUnique {
+            checkFrame = checkFrame.insetBy(dx: 2.0, dy: 2.0)
+        }
+        let checkLayer: CheckLayer
+        let isNew: Bool
+        if let current = self.checkLayer {
+            checkLayer = current
+            isNew = false
+        } else {
+            checkLayer = CheckLayer(theme: checkTheme)
+            self.checkLayer = checkLayer
+            self.layer.addSublayer(checkLayer)
+            isNew = true
+        }
+        checkLayer.theme = checkTheme
+        checkLayer.frame = checkFrame
+        checkLayer.setSelected(isSelected, animated: animated && !isNew)
+    }
+
+    @objc private func pressed() {
+        self.action?()
     }
 }
 
