@@ -12,7 +12,8 @@ private enum GiftSizeLayoutTests {
         GiftTileSize(width: 1, height: 1),
         GiftTileSize(width: 1, height: 2),
         GiftTileSize(width: 2, height: 1),
-        GiftTileSize(width: 2, height: 2)
+        GiftTileSize(width: 2, height: 2),
+        GiftTileSize(width: 3, height: 1)
     ]
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
@@ -74,7 +75,7 @@ private enum GiftSizeLayoutTests {
         for (index, placement) in placements.enumerated() {
             expect(placement.column >= 0 && placement.row >= 0, "Placement origins cannot be negative")
             expect(placement.column + placement.size.width <= columns, "Tiles must stay inside the grid")
-            expect(placement.size == GiftTileSize(width: min(columns, sizes[index].width), height: sizes[index].height), "A tile must retain its requested size, except width on a one-column grid")
+            expect(placement.size == GiftTileSize(width: min(columns, sizes[index].width), height: sizes[index].height), "A tile must retain its requested size, except width on a narrower grid")
             let tileCells = cells(placement)
             expect(occupied.isDisjoint(with: tileCells), "Gift tiles cannot overlap")
             occupied.formUnion(tileCells)
@@ -99,6 +100,8 @@ private enum GiftSizeLayoutTests {
     }
 
     private static func testPacking() {
+        expect(GiftTileSize.supportedSizes == sizes, "The editor must offer exactly the original four sizes and the full-width, one-row size")
+        expect(sizes.allSatisfy { $0.isSupported }, "All five user sizes must be eligible for persistence")
         let compact = [sizes[3], sizes[1], sizes[2], sizes[0]]
         expect(GiftSizeLayout.arrange(sizes: compact, columns: 3) == [
             GiftTilePlacement(column: 0, row: 0, size: sizes[3]),
@@ -114,8 +117,24 @@ private enum GiftSizeLayoutTests {
             GiftTilePlacement(column: 2, row: 1, size: sizes[0])
         ], "Small gifts must fill holes beside a tall gift")
 
+        expect(GiftSizeLayout.arrange(sizes: [sizes[0], sizes[4], sizes[2], sizes[0]], columns: 3) == [
+            GiftTilePlacement(column: 0, row: 0, size: sizes[0]),
+            GiftTilePlacement(column: 0, row: 1, size: sizes[4]),
+            GiftTilePlacement(column: 1, row: 0, size: sizes[2]),
+            GiftTilePlacement(column: 0, row: 2, size: sizes[0])
+        ], "A full-width gift must occupy one row while later gifts fill earlier holes")
+        expect(cells(GiftTilePlacement(column: 0, row: 0, size: sizes[4])).count == 3, "A full-width gift must occupy three cells in one row")
+
+        let transient = GiftTileSize(width: 3, height: 2)
+        expect(!transient.isSupported, "The full-width, two-row live footprint must not become a user size")
+        let preview = GiftSizeLayout.arrange(sizes: [sizes[0], transient, sizes[2], sizes[1]], columns: 3, anchor: (1, 2, 0))
+        expect(preview[1] == GiftTilePlacement(column: 0, row: 0, size: transient), "A transient full-width, two-row drag must reserve its complete footprint")
+        expect(cells(preview[1]).count == 6, "A transient full-width, two-row drag must occupy six cells")
+        checkArrangement([sizes[0], transient, sizes[2], sizes[1]], columns: 3, anchor: (1, 2, 0))
+        checkArrangement([transient, sizes[4], sizes[3], sizes[1], sizes[0]], columns: 4)
+
         for columns in [1, 3, 4, 5] {
-            forEachSequence(maxLength: 6) { sequence in
+            forEachSequence(maxLength: 5) { sequence in
                 checkArrangement(sequence, columns: columns)
             }
         }
@@ -123,7 +142,7 @@ private enum GiftSizeLayoutTests {
             checkArrangement(Array(repeating: sizes, count: 10).flatMap { $0 }, columns: columns)
         }
         expect(GiftTileSize(width: -10, height: 0) == .standard, "Constructed sizes must clamp to at least one cell")
-        expect(GiftTileSize(width: 100, height: 100) == sizes[3], "Constructed sizes must clamp to at most two cells")
+        expect(GiftTileSize(width: 100, height: 100) == transient, "Constructed sizes must clamp to three columns and two rows for live packing")
     }
 
     private static func testAnchors() {
@@ -161,8 +180,18 @@ private enum GiftSizeLayoutTests {
                     expect(GiftSizeLayout.snappedSize(width: midpointWidth + widthOffset, height: midpointHeight + heightOffset, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == expected, "Width and height must independently snap at their exact midpoint")
                 }
             }
+            let wideMidpoint = cellWidth * 2.0 + spacing + (cellWidth + spacing) * 0.5
+            for widthOffset in [-0.001, 0.0, 0.001] {
+                let expected = widthOffset >= 0.0 ? sizes[4] : sizes[2]
+                expect(GiftSizeLayout.snappedSize(width: wideMidpoint + widthOffset, height: cellHeight, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == expected, "One-row gifts must snap to three columns at the 2.5-column midpoint")
+                for heightOffset in [-0.001, 0.0, 0.001] {
+                    let expected = heightOffset < 0.0 ? (widthOffset >= 0.0 ? sizes[4] : sizes[2]) : sizes[3]
+                    expect(GiftSizeLayout.snappedSize(width: wideMidpoint + widthOffset, height: midpointHeight + heightOffset, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == expected, "A three-column drag must snap back to two columns when its height reaches two rows")
+                }
+            }
             expect(GiftSizeLayout.snappedSize(width: -100, height: -100, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == .standard, "Undersized drag dimensions must clamp to one cell")
-            expect(GiftSizeLayout.snappedSize(width: 1_000_000, height: 1_000_000, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == sizes[3], "Oversized drag dimensions must clamp to two cells")
+            expect(GiftSizeLayout.snappedSize(width: 1_000_000, height: cellHeight, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == sizes[4], "An oversized one-row drag must clamp to three columns")
+            expect(GiftSizeLayout.snappedSize(width: 1_000_000, height: 1_000_000, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == sizes[3], "An oversized two-row drag must clamp to two columns")
         }
 
         let invalid: [(Double, Double, Double, Double, Double)] = [
@@ -180,6 +209,31 @@ private enum GiftSizeLayoutTests {
         ]
         for (width, height, cellWidth, cellHeight, spacing) in invalid {
             expect(GiftSizeLayout.snappedSize(width: width, height: height, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == .standard, "Nonfinite or invalid grid metrics must safely fall back to standard")
+            expect(GiftSizeLayout.reservedSize(width: width, height: height, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == .standard, "Nonfinite or invalid live packing metrics must safely fall back to standard")
+        }
+    }
+
+    private static func testLivePackingFootprints() {
+        for (cellWidth, cellHeight, spacing) in [(100.0, 100.0, 10.0), (180.0, 104.0, 10.0), (70.5, 90.25, 0.0)] {
+            for expected in sizes + [GiftTileSize(width: 3, height: 2)] {
+                let width = cellWidth * Double(expected.width) + spacing * Double(expected.width - 1)
+                let height = cellHeight * Double(expected.height) + spacing * Double(expected.height - 1)
+                expect(GiftSizeLayout.reservedSize(width: width, height: height, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == expected, "Each snapped rectangle must reserve its complete live footprint")
+            }
+            for widthOffset in [-0.001, 0.0, 0.001] {
+                for heightOffset in [-0.001, 0.0, 0.001] {
+                    let width = cellWidth * 2.0 + spacing + 1.0 + widthOffset
+                    let height = cellHeight + 1.0 + heightOffset
+                    let expected = GiftTileSize(width: widthOffset > 0.0 ? 3 : 2, height: heightOffset > 0.0 ? 2 : 1)
+                    let reserved = GiftSizeLayout.reservedSize(width: width, height: height, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing)
+                    expect(reserved == expected, "Live packing must reserve a third column and second row immediately beyond the one-point tolerance")
+                    checkArrangement([sizes[0], reserved, sizes[1], sizes[3]], columns: 3, anchor: (1, 2, 0))
+                }
+            }
+            expect(GiftSizeLayout.reservedSize(width: cellWidth + 1.0, height: cellHeight, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == sizes[0], "The one-point tolerance must keep a standard gift in one column")
+            expect(GiftSizeLayout.reservedSize(width: cellWidth + 1.001, height: cellHeight, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == sizes[2], "A growing standard gift must immediately reserve its neighboring column")
+            expect(GiftSizeLayout.reservedSize(width: -100.0, height: -100.0, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == .standard, "An undersized live footprint must clamp to one cell")
+            expect(GiftSizeLayout.reservedSize(width: 1_000_000.0, height: 1_000_000.0, cellWidth: cellWidth, cellHeight: cellHeight, spacing: spacing) == GiftTileSize(width: 3, height: 2), "An oversized live footprint must reserve three columns and two rows before snapping")
         }
     }
 
@@ -215,12 +269,25 @@ private enum GiftSizeLayoutTests {
         expect(store.load().isEmpty && defaults.object(forKey: key) == nil, "No custom sizes must remove the profile's defaults key")
         expect(GiftSizeStore(accountId: 101, peerId: 200, defaults: defaults).load() == ["other": sizes[3]], "Removing one profile must preserve another account")
 
+        let originalSizes = ["square": sizes[0], "tall": sizes[1], "wide": sizes[2], "large": sizes[3]]
+        defaults.set(try! JSONEncoder().encode(originalSizes), forKey: key)
+        expect(store.load() == originalSizes, "All four original sizes must remain readable from legacy JSON")
+        defaults.set(Data("{\"full-width\":{\"width\":3,\"height\":1}}".utf8), forKey: key)
+        expect(store.load() == ["full-width": sizes[4]], "A three-column, one-row gift must decode from legacy size JSON")
+        store.save(["full-width": sizes[4]])
+        expect(recreated.load() == ["full-width": sizes[4]], "A full-width gift must survive Save and store recreation")
+        store.save(["full-width": sizes[4], "transient": GiftTileSize(width: 3, height: 2)])
+        expect(recreated.load() == ["full-width": sizes[4]], "The transient three-column, two-row footprint must never be persisted")
+        store.save(["transient": GiftTileSize(width: 3, height: 2)])
+        expect(defaults.object(forKey: key) == nil, "Saving only unsupported transient footprints must remove the snapshot")
+
         let invalidPayloads = [
             "not json",
             "[]",
             "null",
             "{\"gift\":{\"width\":0,\"height\":1}}",
-            "{\"gift\":{\"width\":3,\"height\":1}}",
+            "{\"gift\":{\"width\":4,\"height\":1}}",
+            "{\"gift\":{\"width\":3,\"height\":2}}",
             "{\"gift\":{\"width\":1,\"height\":-1}}",
             "{\"gift\":{\"width\":1,\"height\":3}}",
             "{\"gift\":{\"width\":\"2\",\"height\":1}}",
@@ -315,12 +382,113 @@ private enum GiftSizeLayoutTests {
         }
     }
 
+    private static func testFullWidthAnchorPersistence() {
+        let suite = "Telegram.FullWidthGiftAnchorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = GiftSizeStore(accountId: 42, peerId: 84, defaults: defaults)
+        let giftKeys = ["left", "middle", "right"]
+
+        for index in [1, 2] {
+            let anchor = GiftTileAnchor(key: giftKeys[index], scope: "0:0:date:3", column: index, row: 0)
+            let customSizes = [giftKeys[index]: sizes[4]]
+            let completedResize = giftKeys.map { customSizes[$0] ?? .standard }
+            let placements = GiftSizeLayout.arrange(sizes: completedResize, columns: 3, anchor: (index, anchor.column, anchor.row))
+            expect(placements[index] == GiftTilePlacement(column: 0, row: 0, size: sizes[4]), "A middle or right gift expanded to full width must shift inward and preserve its row")
+            expect(placements.enumerated().filter { $0.offset != index }.allSatisfy { $0.element.row == 1 }, "The neighboring gifts must move below a full-width anchored gift")
+            checkArrangement(completedResize, columns: 3, anchor: (index, anchor.column, anchor.row))
+
+            store.save(customSizes, anchor: anchor)
+            let recreated = GiftSizeStore(accountId: 42, peerId: 84, defaults: UserDefaults(suiteName: suite)!)
+            expect(recreated.load() == customSizes && recreated.loadAnchor() == anchor, "The full-width span and existing middle or right anchor must survive recreation")
+            let loadedAnchor = recreated.loadAnchor()!
+            let loadedSizes = recreated.load()
+            let restored = GiftSizeLayout.arrange(sizes: giftKeys.map { loadedSizes[$0] ?? .standard }, columns: 3, anchor: (giftKeys.firstIndex(of: loadedAnchor.key)!, loadedAnchor.column, loadedAnchor.row))
+            expect(restored == placements, "Loading a saved middle or right anchor must retain the full-width gift layout")
+            expect(GiftSizeLayout.arrange(sizes: completedResize, columns: 3)[index].row == 1, "The full-width regression scenario must expose a missing anchor")
+        }
+    }
+
+    private static func testInwardResizeAnchors() {
+        let suite = "Telegram.InwardGiftResizeAnchorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = GiftSizeStore(accountId: 42, peerId: 84, defaults: defaults)
+        let growthCases = [
+            (columns: 3, initialColumn: 1, expectedColumns: [1, 0, 0]),
+            (columns: 3, initialColumn: 2, expectedColumns: [2, 1, 0]),
+            (columns: 4, initialColumn: 1, expectedColumns: [1, 0, 0]),
+            (columns: 4, initialColumn: 2, expectedColumns: [2, 1, 0]),
+            (columns: 4, initialColumn: 3, expectedColumns: [3, 2, 1]),
+            (columns: 5, initialColumn: 2, expectedColumns: [2, 1, 0]),
+            (columns: 5, initialColumn: 4, expectedColumns: [4, 3, 2])
+        ]
+        for scenario in growthCases {
+            let index = scenario.initialColumn
+            let giftKeys = (0 ..< scenario.columns + 6).map { "gift-\($0)" }
+            for width in 1 ... 3 {
+                let expectedColumn = scenario.expectedColumns[width - 1]
+                let column = GiftSizeLayout.resizeAnchorColumn(initialColumn: scenario.initialColumn, initialWidth: 1, width: width, columns: scenario.columns, growsInward: true)
+                expect(column == expectedColumn, "An inward \(width)-column resize from column \(scenario.initialColumn) on a \(scenario.columns)-column grid must reserve the actual dragged origin")
+                let size = GiftTileSize(width: width, height: 1)
+                var resized = Array(repeating: GiftTileSize.standard, count: giftKeys.count)
+                resized[index] = size
+                let placements = GiftSizeLayout.arrange(sizes: resized, columns: scenario.columns, anchor: (index, column, 0))
+                let actualFootprint = GiftTilePlacement(column: expectedColumn, row: 0, size: size)
+                expect(placements[index] == actualFootprint, "Live packing must use the resized visual footprint instead of the gift's original column")
+                for (neighborIndex, neighbor) in placements.enumerated() where neighborIndex != index {
+                    expect(cells(neighbor).isDisjoint(with: cells(actualFootprint)), "A neighbor must never occupy the inward drag footprint while growing from one to three columns")
+                }
+                checkArrangement(resized, columns: scenario.columns, anchor: (index, column, 0))
+
+                let anchor = GiftTileAnchor(key: giftKeys[index], scope: "0:0:date:\(scenario.columns)", column: column, row: 0)
+                store.save([giftKeys[index]: size], anchor: anchor)
+                let recreated = GiftSizeStore(accountId: 42, peerId: 84, defaults: UserDefaults(suiteName: suite)!)
+                let loadedAnchor = recreated.loadAnchor()!
+                expect(loadedAnchor == anchor, "Save must retain the inward resize origin on narrow and wide grids")
+                let loadedSizes = recreated.load()
+                let restored = GiftSizeLayout.arrange(sizes: giftKeys.map { loadedSizes[$0] ?? .standard }, columns: scenario.columns, anchor: (index, loadedAnchor.column, loadedAnchor.row))
+                expect(restored == placements, "Save and recreation must preserve the completed inward resize layout")
+            }
+        }
+
+        let shrinkCases = [
+            (columns: 3, initialColumn: 0, initialWidth: 2, expectedColumn: 1),
+            (columns: 4, initialColumn: 1, initialWidth: 2, expectedColumn: 2),
+            (columns: 5, initialColumn: 2, initialWidth: 3, expectedColumn: 4)
+        ]
+        for scenario in shrinkCases {
+            let column = GiftSizeLayout.resizeAnchorColumn(initialColumn: scenario.initialColumn, initialWidth: scenario.initialWidth, width: 1, columns: scenario.columns, growsInward: true)
+            expect(column == scenario.expectedColumn, "An inward shrink must preserve the gift's original right edge")
+            checkArrangement([sizes[0], sizes[0], sizes[1], sizes[3]], columns: scenario.columns, anchor: (0, column, 0))
+        }
+
+        let outwardCases = [
+            (columns: 3, initialColumn: 0, width: 2, expectedColumn: 0),
+            (columns: 3, initialColumn: 1, width: 2, expectedColumn: 1),
+            (columns: 3, initialColumn: 2, width: 2, expectedColumn: 1),
+            (columns: 4, initialColumn: 3, width: 3, expectedColumn: 1),
+            (columns: 5, initialColumn: 2, width: 3, expectedColumn: 2),
+            (columns: 5, initialColumn: 4, width: 3, expectedColumn: 2)
+        ]
+        for scenario in outwardCases {
+            let column = GiftSizeLayout.resizeAnchorColumn(initialColumn: scenario.initialColumn, initialWidth: 1, width: scenario.width, columns: scenario.columns, growsInward: false)
+            expect(column == scenario.expectedColumn, "An outward resize must retain its left edge and clamp only at the grid boundary")
+            checkArrangement([GiftTileSize(width: scenario.width, height: 1), sizes[0], sizes[1], sizes[3]], columns: scenario.columns, anchor: (0, column, 0))
+        }
+    }
+
     static func main() {
         testPacking()
         testAnchors()
         testSnapping()
+        testLivePackingFootprints()
         testPersistence()
         testAnchorPersistence()
+        testFullWidthAnchorPersistence()
+        testInwardResizeAnchors()
         print("GiftSizeLayoutTests passed (\(assertions) assertions)")
     }
 }

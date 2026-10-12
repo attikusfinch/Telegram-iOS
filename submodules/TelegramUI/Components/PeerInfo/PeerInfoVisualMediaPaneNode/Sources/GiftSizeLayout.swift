@@ -6,9 +6,15 @@ struct GiftTileSize: Codable, Equatable {
     let height: Int
 
     static let standard = GiftTileSize(width: 1, height: 1)
+    static let supportedSizes = [standard, GiftTileSize(width: 1, height: 2), GiftTileSize(width: 2, height: 1), GiftTileSize(width: 2, height: 2), GiftTileSize(width: 3, height: 1)]
+
+    var isSupported: Bool {
+        return self.width < 3 || self.height == 1
+    }
 
     init(width: Int, height: Int) {
-        self.width = min(2, max(1, width))
+        // A 3×2 footprint is allowed during a drag, but only 3×1 is saved.
+        self.width = min(3, max(1, width))
         self.height = min(2, max(1, height))
     }
 
@@ -21,7 +27,7 @@ struct GiftTileSize: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let width = try container.decode(Int.self, forKey: .width)
         let height = try container.decode(Int.self, forKey: .height)
-        guard (1 ... 2).contains(width), (1 ... 2).contains(height) else {
+        guard (1 ... 3).contains(width), (1 ... 2).contains(height), width < 3 || height == 1 else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported gift tile size"))
         }
         self.init(width: width, height: height)
@@ -46,7 +52,27 @@ enum GiftSizeLayout {
         guard width.isFinite, height.isFinite, cellWidth.isFinite, cellHeight.isFinite, spacing.isFinite, cellWidth > 0.0, cellHeight > 0.0, spacing >= 0.0 else {
             return .standard
         }
-        return GiftTileSize(width: width >= cellWidth + (cellWidth + spacing) * 0.5 ? 2 : 1, height: height >= cellHeight + (cellHeight + spacing) * 0.5 ? 2 : 1)
+        let rows = height >= cellHeight + (cellHeight + spacing) * 0.5 ? 2 : 1
+        let columns: Int
+        if rows == 1 && width >= cellWidth + (cellWidth + spacing) * 1.5 {
+            columns = 3
+        } else {
+            columns = width >= cellWidth + (cellWidth + spacing) * 0.5 ? 2 : 1
+        }
+        return GiftTileSize(width: columns, height: rows)
+    }
+
+    static func reservedSize(width: Double, height: Double, cellWidth: Double, cellHeight: Double, spacing: Double) -> GiftTileSize {
+        guard width.isFinite, height.isFinite, cellWidth.isFinite, cellHeight.isFinite, spacing.isFinite, cellWidth > 0.0, cellHeight > 0.0, spacing >= 0.0 else {
+            return .standard
+        }
+        let columns = width > cellWidth * 2.0 + spacing + 1.0 ? 3 : (width > cellWidth + 1.0 ? 2 : 1)
+        return GiftTileSize(width: columns, height: height > cellHeight + 1.0 ? 2 : 1)
+    }
+
+    static func resizeAnchorColumn(initialColumn: Int, initialWidth: Int, width: Int, columns: Int, growsInward: Bool) -> Int {
+        let column = growsInward ? initialColumn + initialWidth - width : initialColumn
+        return max(0, min(columns - width, column))
     }
 
     /// First-fit packing fills holes left by tall tiles. The tile being resized can
@@ -149,7 +175,7 @@ final class GiftSizeStore {
 
     func save(_ sizes: [String: GiftTileSize], anchor: GiftTileAnchor? = nil) {
         // Default tiles need no entry. Keep unseen gifts because the list is paginated.
-        let customSizes = sizes.filter { $0.value != .standard }
+        let customSizes = sizes.filter { $0.value.isSupported && $0.value != .standard }
         if customSizes.isEmpty && anchor == nil {
             self.defaults.removeObject(forKey: self.key)
         } else if let data = try? JSONEncoder().encode(Snapshot(sizes: customSizes, anchor: anchor)) {

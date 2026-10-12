@@ -77,7 +77,6 @@ final class GiftsListView: UIView {
     private var savedSizeAnchor: GiftTileAnchor?
     private var draftSizeAnchor: GiftTileAnchor?
     private var resizeHandles: [AnyHashable: GiftResizeHandle] = [:]
-    private var sizeEditingPanel: GiftSizeEditingPanel?
     private var tileGeometry: [String: (frame: CGRect, placement: GiftTilePlacement, columns: Int, cellSize: CGSize, spacing: CGFloat)] = [:]
     private var cachedTileLayout: (sizes: [GiftTileSize], columns: Int, anchorIndex: Int?, anchorColumn: Int?, anchorRow: Int?, placements: [GiftTilePlacement])?
     private struct ResizingGift {
@@ -90,6 +89,7 @@ final class GiftsListView: UIView {
         let spacing: CGFloat
         let scope: String
         let growsInward: Bool
+        let maximumWidth: Int
         var previewSize: CGSize
         var reservedSize: GiftTileSize
     }
@@ -498,7 +498,8 @@ final class GiftsListView: UIView {
         case .began:
             guard self.resizingGift == nil else { return }
             let initialSize = self.draftSizes?[key] ?? .standard
-            self.resizingGift = ResizingGift(key: key, initialFrame: geometry.frame, initialSize: initialSize, column: geometry.placement.column, row: geometry.placement.row, cellSize: geometry.cellSize, spacing: geometry.spacing, scope: self.sizeLayoutScope(columns: geometry.columns), growsInward: initialSize.width == 1 && geometry.placement.column == geometry.columns - 1, previewSize: geometry.frame.size, reservedSize: initialSize)
+            let maximumWidth = min(3, geometry.columns)
+            self.resizingGift = ResizingGift(key: key, initialFrame: geometry.frame, initialSize: initialSize, column: geometry.placement.column, row: geometry.placement.row, cellSize: geometry.cellSize, spacing: geometry.spacing, scope: self.sizeLayoutScope(columns: geometry.columns), growsInward: geometry.placement.column + maximumWidth > geometry.columns, maximumWidth: maximumWidth, previewSize: geometry.frame.size, reservedSize: initialSize)
             var ancestor = self.superview
             while let view = ancestor {
                 if let scrollView = view as? UIScrollView {
@@ -518,10 +519,10 @@ final class GiftsListView: UIView {
             let widthStep = resizingGift.cellSize.width + resizingGift.spacing
             let heightStep = resizingGift.cellSize.height + resizingGift.spacing
             let horizontalTranslation = resizingGift.growsInward ? -translation.x : translation.x
-            let previewSize = CGSize(width: min(resizingGift.cellSize.width + widthStep, max(resizingGift.cellSize.width, resizingGift.initialFrame.width + horizontalTranslation)), height: min(resizingGift.cellSize.height + heightStep, max(resizingGift.cellSize.height, resizingGift.initialFrame.height + translation.y)))
+            let previewSize = CGSize(width: min(resizingGift.cellSize.width + widthStep * CGFloat(resizingGift.maximumWidth - 1), max(resizingGift.cellSize.width, resizingGift.initialFrame.width + horizontalTranslation)), height: min(resizingGift.cellSize.height + heightStep, max(resizingGift.cellSize.height, resizingGift.initialFrame.height + translation.y)))
             let snappedSize = GiftSizeLayout.snappedSize(width: Double(previewSize.width), height: Double(previewSize.height), cellWidth: Double(resizingGift.cellSize.width), cellHeight: Double(resizingGift.cellSize.height), spacing: Double(resizingGift.spacing))
             let previousSize = self.draftSizes?[key] ?? .standard
-            let reservedSize = GiftTileSize(width: previewSize.width > resizingGift.cellSize.width + 1.0 ? 2 : 1, height: previewSize.height > resizingGift.cellSize.height + 1.0 ? 2 : 1)
+            let reservedSize = GiftSizeLayout.reservedSize(width: Double(previewSize.width), height: Double(previewSize.height), cellWidth: Double(resizingGift.cellSize.width), cellHeight: Double(resizingGift.cellSize.height), spacing: Double(resizingGift.spacing))
             let footprintChanged = reservedSize != resizingGift.reservedSize
             resizingGift.previewSize = previewSize
             resizingGift.reservedSize = reservedSize
@@ -543,7 +544,8 @@ final class GiftsListView: UIView {
                 let horizontalTranslation = resizingGift.growsInward ? -translation.x : translation.x
                 let snappedSize = GiftSizeLayout.snappedSize(width: Double(resizingGift.initialFrame.width + horizontalTranslation), height: Double(resizingGift.initialFrame.height + translation.y), cellWidth: Double(resizingGift.cellSize.width), cellHeight: Double(resizingGift.cellSize.height), spacing: Double(resizingGift.spacing))
                 self.draftSizes?[key] = snappedSize
-                self.draftSizeAnchor = GiftTileAnchor(key: key, scope: resizingGift.scope, column: min(geometry.columns - snappedSize.width, resizingGift.column), row: resizingGift.row)
+                let anchorColumn = GiftSizeLayout.resizeAnchorColumn(initialColumn: resizingGift.column, initialWidth: resizingGift.initialSize.width, width: snappedSize.width, columns: geometry.columns, growsInward: resizingGift.growsInward)
+                self.draftSizeAnchor = GiftTileAnchor(key: key, scope: resizingGift.scope, column: anchorColumn, row: resizingGift.row)
             } else {
                 self.draftSizes?[key] = resizingGift.initialSize
             }
@@ -558,7 +560,7 @@ final class GiftsListView: UIView {
     }
 
     private func setGiftSize(key: String, size: GiftTileSize) {
-        guard self.isSizeEditing, self.resizingGift == nil else { return }
+        guard self.isSizeEditing, self.resizingGift == nil, size.isSupported else { return }
         self.draftSizes?[key] = size
         if let geometry = self.tileGeometry[key] {
             self.draftSizeAnchor = GiftTileAnchor(key: key, scope: self.sizeLayoutScope(columns: geometry.columns), column: max(0, min(geometry.columns - size.width, geometry.placement.column)), row: geometry.placement.row)
@@ -600,9 +602,6 @@ final class GiftsListView: UIView {
     }
     
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if let panel = self.sizeEditingPanel, !panel.isHidden, panel.frame.contains(point) {
-            return true
-        }
         if let topInset = self.topInset, point.y < topInset {
             return false
         }
@@ -657,7 +656,8 @@ final class GiftsListView: UIView {
         }
         if let resizingGift = self.resizingGift {
             if let index = starsProducts.firstIndex(where: { self.sizeKey(for: $0) == resizingGift.key }) {
-                anchor = (index, resizingGift.column, resizingGift.row)
+                let anchorColumn = GiftSizeLayout.resizeAnchorColumn(initialColumn: resizingGift.column, initialWidth: resizingGift.initialSize.width, width: resizingGift.reservedSize.width, columns: columns, growsInward: resizingGift.growsInward)
+                anchor = (index, anchorColumn, resizingGift.row)
                 layoutSizes[index] = resizingGift.reservedSize
             } else {
                 self.resizingGift = nil
@@ -687,6 +687,8 @@ final class GiftsListView: UIView {
                 if resizingGift.growsInward {
                     origin.x = resizingGift.initialFrame.maxX - resizingGift.previewSize.width
                 }
+                let gridRight = params.size.width - itemsSideInset
+                origin.x = max(itemsSideInset, min(gridRight - resizingGift.previewSize.width, origin.x))
                 itemFrame = CGRect(origin: origin, size: resizingGift.previewSize)
                 gridBottom = max(gridBottom, itemFrame.maxY)
             }
@@ -1002,7 +1004,7 @@ final class GiftsListView: UIView {
                             self.addSubview(handle)
                         }
                         handle.tileSize = tileSizes[index]
-                        handle.growsInward = tileSizes[index].width == 1 && placement.column == columns - 1
+                        handle.growsInward = placement.column + min(3, columns) > columns
                         handle.isUserInteractionEnabled = self.resizingGift == nil || isResizing
                         itemTransition.setFrame(view: handle, frame: CGRect(x: itemFrame.maxX - 44.0, y: itemFrame.maxY - 44.0, width: 44.0, height: 44.0))
                         self.bringSubviewToFront(handle)
@@ -1309,37 +1311,6 @@ final class GiftsListView: UIView {
             }
         }
 
-        if self.isSizeEditing {
-            let panel: GiftSizeEditingPanel
-            if let current = self.sizeEditingPanel {
-                panel = current
-            } else {
-                panel = GiftSizeEditingPanel()
-                panel.save = { [weak self] in self?.endSizeEditing(save: true) }
-                panel.cancel = { [weak self] in self?.endSizeEditing(save: false) }
-                self.sizeEditingPanel = panel
-                self.addSubview(panel)
-                if !UIAccessibility.isReduceMotionEnabled {
-                    panel.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2)
-                    panel.layer.animateScale(from: 0.94, to: 1.0, duration: 0.25)
-                }
-            }
-            panel.update(accentColor: presentationData.theme.list.itemAccentColor, textColor: presentationData.theme.list.itemPrimaryTextColor, backgroundColor: presentationData.theme.list.blocksBackgroundColor)
-            let panelHeight = panel.preferredHeight
-            let panelWidth = min(320.0, max(0.0, size.width - (sideInset + 16.0) * 2.0))
-            let panelBottomInset = max(bottomInset, self.safeAreaInsets.bottom) + 12.0
-            // visibleBounds is expanded by 10 points by the pane for preloading.
-            let panelFrame = CGRect(x: floorToScreenPixels((size.width - panelWidth) * 0.5), y: visibleBounds.maxY - 10.0 - panelBottomInset - panelHeight, width: panelWidth, height: panelHeight)
-            ComponentTransition.immediate.setFrame(view: panel, frame: panelFrame)
-            panel.isHidden = params.visibleHeight < 140.0
-            self.bringSubviewToFront(panel)
-            contentHeight += panelHeight + panelBottomInset + 12.0
-        } else if let panel = self.sizeEditingPanel {
-            self.sizeEditingPanel = nil
-            self.sizeEditTransition.setAlpha(view: panel, alpha: 0.0, completion: { _ in
-                panel.removeFromSuperview()
-            })
-        }
                         
         return contentHeight
     }

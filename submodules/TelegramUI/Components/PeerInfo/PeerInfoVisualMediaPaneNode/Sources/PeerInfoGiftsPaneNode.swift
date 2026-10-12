@@ -759,9 +759,10 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             
             let panelEdgeEffectView: EdgeEffectView
             let panelContentContainer: UIView
+            let isSizeEditing = self.giftsListView.isSizeEditing
             
             var panelVisibility = params.expandProgress < 1.0 ? 0.0 : 1.0
-            if !self.canGift || self.resultsAreEmpty || self.giftsListView.isSizeEditing {
+            if !isSizeEditing && (!self.canGift || self.resultsAreEmpty) {
                 panelVisibility = 0.0
             }
             
@@ -772,6 +773,8 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                 self.view.addSubview(panelContentContainer)
                 self.panelContentContainer = panelContentContainer
             }
+            self.view.bringSubviewToFront(panelContentContainer)
+            panelContentContainer.isUserInteractionEnabled = panelVisibility > 0.0
             
             let panelTransition: ComponentTransition = .immediate
             if let current = self.panelEdgeEffectView {
@@ -794,7 +797,9 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
             
             let buttonTitle: String
             var buttonIconName: String?
-            if self.peerId == self.context.account.peerId {
+            if isSizeEditing {
+                buttonTitle = "Save Grid"
+            } else if self.peerId == self.context.account.peerId {
                 if case .all = self.currentCollection {
                     buttonTitle = params.presentationData.strings.PeerInfo_Gifts_Send
                 } else {
@@ -834,7 +839,14 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                         ),
                         isEnabled: true,
                         action: { [weak self] in
-                            self?.buttonPressed()
+                            guard let self else {
+                                return
+                            }
+                            if self.giftsListView.isSizeEditing {
+                                self.giftsListView.endSizeEditing(save: true)
+                            } else {
+                                self.buttonPressed()
+                            }
                         }
                     )
                 ),
@@ -855,11 +867,12 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                     panelContentContainer.addSubview(panelButtonView)
                 }
                 panelButtonView.frame = CGRect(origin: CGPoint(x: buttonInsets.left, y: 8.0), size: panelButtonSize)
+                panelButtonView.isHidden = false
             }
             
             panelTransition.setFrame(view: panelContentContainer, frame: CGRect(origin: CGPoint(x: 0.0, y: size.height - bottomPanelHeight), size: CGSize(width: size.width, height: bottomPanelHeight)))
             
-            if self.canManage {
+            if self.canManage && !isSizeEditing {
                 let panelCheck: ComponentView<Empty>
                 if let current = self.panelCheck {
                     panelCheck = current
@@ -925,10 +938,13 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
                         panelContentContainer.addSubview(panelCheckView)
                     }
                     panelCheckView.frame = CGRect(origin: CGPoint(x: floor((size.width - panelCheckSize.width) / 2.0), y: 16.0 + 16.0), size: panelCheckSize)
+                    panelCheckView.isHidden = false
                 }
                 if let panelButtonView = panelButton.view {
                     panelButtonView.isHidden = true
                 }
+            } else if let panelCheckView = self.panelCheck?.view {
+                panelCheckView.isHidden = true
             }
             
             let edgeEffectFrame = CGRect(x: 0.0, y: 0.0, width: size.width, height: bottomPanelHeight)
@@ -1010,9 +1026,8 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         
         var items: [ContextMenuItem] = []
         if gift.reference != nil {
-            items.append(.action(ContextMenuActionItem(text: self.resizeGiftsTitle, icon: { theme in
-                let configuration = UIImage.SymbolConfiguration(pointSize: 20.0, weight: .regular)
-                return UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: configuration)?.withTintColor(theme.contextMenu.primaryColor, renderingMode: .alwaysOriginal)
+            items.append(.action(ContextMenuActionItem(text: self.resizeGiftsTitle, icon: { _ in
+                return generateTintedImage(image: UIImage(bundleImageName: "Peer Info/Gifts/Resize"), color: .white)
             }, action: { [weak self] controller, _ in
                 controller?.dismiss(completion: { [weak self] in
                     self?.beginSizeEditing()
