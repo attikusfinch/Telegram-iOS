@@ -18,6 +18,9 @@ struct WalletCardShaderUniforms {
     float2 cardSize;
     float4 qrRect;
     float4 qrEffects;
+    float4 giftInnerColor;
+    float4 giftOuterColor;
+    float4 giftAccentColor;
 };
 
 struct WalletCardLens {
@@ -221,6 +224,7 @@ fragment float4 walletCardBackgroundFragment(
     float cardRadius = min(uniforms.cornerRadius, min(cardHalf.x, cardHalf.y));
     float2 surface = clamp(float2(uniforms.surfaceTilt.y / 0.30, uniforms.surfaceTilt.x / 0.20),
                            float2(-1.0), float2(1.0));
+    const bool hasGiftTheme = uniforms.giftInnerColor.w > 0.0;
 
     // Edge instances never evaluate the face's material, lens or chip.
     if (input.layer < 1.5) {
@@ -239,8 +243,16 @@ fragment float4 walletCardBackgroundFragment(
         float streak = exp(-pow((run - (surface.x * 0.9 - surface.y * 0.7)) / 0.38, 2.0));
         edge += float3(0.30, 0.62, 1.0) * streak * 0.18 * (0.35 + 0.65 * diffuse);
         edge += float3(0.30, 0.62, 1.0) * step(0.88, t) * (0.18 + 0.40 * diffuse);
+        if (hasGiftTheme) {
+            edge = uniforms.giftOuterColor.rgb * (0.45 + 0.30 * diffuse) * lines;
+            edge += uniforms.giftAccentColor.rgb * streak * 0.035 * (0.35 + 0.65 * diffuse);
+            edge += uniforms.giftAccentColor.rgb * step(0.88, t) * (0.012 + 0.045 * diffuse);
+        }
         float3 edgeColor = clamp(walletCardApplySaturation(walletCardLinearToSrgb(edge))
             * float3(1.05933, 0.912212, 0.968627), 0.0, 1.0);
+        if (hasGiftTheme) {
+            edgeColor = clamp(walletCardLinearToSrgb(edge), 0.0, 1.0);
+        }
         return float4(edgeColor * cover, cover);
     }
     float2 uv = walletCardLensPoint(input.uv * float2(safeWidth, safeHeight), lens, hull)
@@ -284,6 +296,10 @@ fragment float4 walletCardBackgroundFragment(
         float3(0.038, 0.180, 0.955),
         colorBlend
     );
+    if (hasGiftTheme) {
+        float backdropBlend = 1.0 - smoothstep(0.08, 0.85, distance(uv, float2(0.72, 0.36)));
+        gradient = mix(uniforms.giftOuterColor.rgb, uniforms.giftInnerColor.rgb, backdropBlend);
+    }
 
     float brushedGrain = noiseMap.sample(noiseSampler, uv * float2(1.4, 8.0)).r;
     float mediumGrain = noiseMap.sample(noiseSampler, uv * float2(4.0, 3.0)).r;
@@ -361,7 +377,9 @@ fragment float4 walletCardBackgroundFragment(
     );
     float studioReflection = radialWedge * lobeBalance * ringReflection;
     constexpr float3 cyanReflection = float3(0.090, 0.565, 0.965);
-    gradient += cyanReflection * studioReflection * 0.32;
+    gradient += hasGiftTheme
+        ? uniforms.giftAccentColor.rgb * studioReflection * 0.075
+        : cyanReflection * studioReflection * 0.32;
 
     float2 normalizedSurfaceTilt = clamp(
         float2(
@@ -394,6 +412,9 @@ fragment float4 walletCardBackgroundFragment(
     gradient = mix(gradient, lifted, starAlpha);
     float3 spark = float3(0.55, 0.8, 1.0)
         * starAlpha * starAlpha * (0.4 + 0.4 * colorBlend);
+    if (hasGiftTheme) {
+        spark = uniforms.giftAccentColor.rgb * starAlpha * starAlpha * 0.16;
+    }
 
     gradient += (fineGrain - 0.5) * 0.014;
     gradient *= 1.0 - 0.14 * smoothstep(0.965, 1.0, uv.y);
@@ -404,7 +425,9 @@ fragment float4 walletCardBackgroundFragment(
         float2 n = walletRoundRectNormal(p, cardHalf, cardRadius);
         float band = smoothstep(-1.1, -0.35, d);
         float2 light = normalize(float2(-0.45 - 0.9 * surface.x, -0.9 + 0.7 * surface.y));
-        gradient += float3(0.10, 0.36, 0.85) * band * (0.03 + 0.26 * max(dot(n, light), 0.0));
+        gradient += hasGiftTheme
+            ? uniforms.giftAccentColor.rgb * band * (0.006 + 0.035 * max(dot(n, light), 0.0))
+            : float3(0.10, 0.36, 0.85) * band * (0.03 + 0.26 * max(dot(n, light), 0.0));
     }
 
     float2 halfSize = float2(safeWidth, safeHeight) * 0.5;
@@ -422,6 +445,13 @@ fragment float4 walletCardBackgroundFragment(
     float3 outputColor = walletCardApplySaturation(
         walletCardLinearToSrgb(gradient + spark)
     );
+    if (hasGiftTheme) {
+        float3 giftColor = max(gradient + spark, 0.0);
+        float luminance = dot(giftColor, float3(0.2126, 0.7152, 0.0722));
+        // Reflections remain visible without washing out white card text.
+        giftColor *= min(1.0, 0.175 / max(luminance, 0.0001));
+        outputColor = walletCardLinearToSrgb(giftColor);
+    }
     if (uniforms.qrEffects.x > 0.0 && all(uniforms.qrRect.zw > 0.0)) {
         float2 position = uv * float2(safeWidth, safeHeight);
         float2 chipScale = uniforms.qrRect.zw / float2(50.0, 38.0);

@@ -66,6 +66,11 @@ swift_library(
         "//submodules/Components/MultilineTextComponent",
         "//submodules/TelegramPresentationData",
         "//submodules/TelegramStringFormatting",
+        "//submodules/TelegramCore",
+        "//submodules/AccountContext",
+        "//submodules/TextFormat",
+        "//submodules/TelegramUI/Components/EmojiTextAttachmentView",
+        "//submodules/TelegramUI/Components/PeerInfo/PeerInfoCoverComponent",
         "//submodules/WalletContext",
     ],
     visibility = [

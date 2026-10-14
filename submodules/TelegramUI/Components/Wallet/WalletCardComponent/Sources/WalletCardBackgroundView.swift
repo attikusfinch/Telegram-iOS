@@ -8,6 +8,51 @@ import MetalKit
 import MetalEngine
 import UIKit
 
+struct WalletCardGiftPalette: Equatable {
+    let inner: SIMD3<Float>
+    let outer: SIMD3<Float>
+    let accent: SIMD3<Float>
+
+    init(innerColor: UInt32, outerColor: UInt32, patternColor: UInt32) {
+        self.inner = Self.readableColor(innerColor)
+        self.outer = Self.readableColor(outerColor)
+        let pattern = Self.linearColor(patternColor)
+        self.accent = pattern * 0.24 + SIMD3<Float>(repeating: 0.76)
+    }
+
+    private static func linearChannel(_ value: Float) -> Float {
+        return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+
+    private static func linearColor(_ rgb: UInt32) -> SIMD3<Float> {
+        return SIMD3<Float>(
+            Self.linearChannel(Float((rgb >> 16) & 0xff) / 255.0),
+            Self.linearChannel(Float((rgb >> 8) & 0xff) / 255.0),
+            Self.linearChannel(Float(rgb & 0xff) / 255.0)
+        )
+    }
+
+    private static func readableColor(_ rgb: UInt32) -> SIMD3<Float> {
+        let color = Self.linearColor(rgb)
+        let luminance = simd_dot(color, SIMD3<Float>(0.2126, 0.7152, 0.0722))
+        // Keep the backdrop hue, including bright gift variants, while reserving
+        // enough contrast for white balances and the cardholder's name.
+        return color * min(1.0, 0.11 / max(luminance, 0.0001))
+    }
+
+    static func uiColor(_ linear: SIMD3<Float>, alpha: CGFloat = 1.0) -> UIColor {
+        func channel(_ value: Float) -> CGFloat {
+            let value = max(0.0, min(1.0, value))
+            return CGFloat(value <= 0.0031308 ? value * 12.92 : 1.055 * pow(value, 1.0 / 2.4) - 0.055)
+        }
+        return UIColor(red: channel(linear.x), green: channel(linear.y), blue: channel(linear.z), alpha: alpha)
+    }
+
+    var accentColor: UIColor {
+        return Self.uiColor(self.accent)
+    }
+}
+
 public final class WalletCardBackgroundMotion {
     public static let shared = WalletCardBackgroundMotion()
 
@@ -220,6 +265,9 @@ private final class WalletCardMetalLayer: MetalEngineSubjectLayer, MetalEngineSu
         var qrRect = SIMD4<Float>(repeating: 0.0)
         // Chip opacity, blur radius in points, and whether the face has a bevel.
         var qrEffects = SIMD4<Float>(repeating: 0.0)
+        var giftInnerColor = SIMD4<Float>(repeating: 0.0)
+        var giftOuterColor = SIMD4<Float>(repeating: 0.0)
+        var giftAccentColor = SIMD4<Float>(repeating: 0.0)
     }
 
     private final class RenderState: RenderToLayerState {
@@ -325,7 +373,8 @@ private final class WalletCardMetalLayer: MetalEngineSubjectLayer, MetalEngineSu
         cornerRadius: CGFloat,
         quad: WalletCardProjectedQuad,
         backQuad: WalletCardProjectedQuad?,
-        qrChip: WalletCardQRChip?
+        qrChip: WalletCardQRChip?,
+        giftPalette: WalletCardGiftPalette?
     ) {
         self.vertexUniforms = VertexUniforms(front: quad, back: backQuad ?? quad)
         if qrChip != nil {
@@ -341,6 +390,11 @@ private final class WalletCardMetalLayer: MetalEngineSubjectLayer, MetalEngineSu
             cardSize: SIMD2<Float>(Float(max(cardSize.width, 1.0)), Float(max(cardSize.height, 1.0)))
         )
         self.fragmentUniforms.qrEffects.z = backQuad == nil ? 0.0 : 1.0
+        if let giftPalette {
+            self.fragmentUniforms.giftInnerColor = SIMD4<Float>(giftPalette.inner, 1.0)
+            self.fragmentUniforms.giftOuterColor = SIMD4<Float>(giftPalette.outer, 1.0)
+            self.fragmentUniforms.giftAccentColor = SIMD4<Float>(giftPalette.accent, 1.0)
+        }
         if let qrChip, self.qrTexture != nil, !qrChip.frame.isEmpty {
             self.fragmentUniforms.qrRect = SIMD4<Float>(Float(qrChip.frame.minX), Float(qrChip.frame.minY), Float(qrChip.frame.width), Float(qrChip.frame.height))
             self.fragmentUniforms.qrEffects.x = Float(max(0.0, min(1.0, qrChip.alpha)))
@@ -498,6 +552,7 @@ final class WalletCardBackgroundView: UIView {
     private var cornerRadius: CGFloat = 0.0
     private var currentTime = 0.0
     private var currentReflectionRotation = WalletCardBackgroundMotion.shared.currentRotation
+    private var giftPalette: WalletCardGiftPalette?
 
     var displaysQRChip: Bool {
         return self.metalView.metalLayer.contents != nil && self.metalView.metalLayer.hasQRChip
@@ -522,9 +577,13 @@ final class WalletCardBackgroundView: UIView {
         self.layoutContent()
     }
 
-    func update(cardSize: CGSize, cornerRadius: CGFloat) {
+    func update(cardSize: CGSize, cornerRadius: CGFloat, giftPalette: WalletCardGiftPalette? = nil) {
         self.cardSize = cardSize
         self.cornerRadius = cornerRadius
+        if self.giftPalette != giftPalette {
+            self.giftPalette = giftPalette
+            self.updateFallbackPalette()
+        }
         self.layoutContent()
         self.renderStaticFrame(time: self.currentTime, reflectionRotation: self.currentReflectionRotation)
     }
@@ -569,7 +628,8 @@ final class WalletCardBackgroundView: UIView {
             cornerRadius: self.cornerRadius,
             quad: quad,
             backQuad: backQuad,
-            qrChip: qrChip
+            qrChip: qrChip,
+            giftPalette: self.giftPalette
         )
     }
 
@@ -662,5 +722,26 @@ final class WalletCardBackgroundView: UIView {
         ]
         self.fallbackRadialGradient.locations = [0.0, 1.0]
         self.fallbackView.layer.addSublayer(self.fallbackRadialGradient)
+    }
+
+    private func updateFallbackPalette() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let giftPalette = self.giftPalette {
+            self.fallbackView.backgroundColor = WalletCardGiftPalette.uiColor(giftPalette.outer)
+            self.fallbackBaseGradient.colors = [
+                WalletCardGiftPalette.uiColor(giftPalette.outer).cgColor,
+                WalletCardGiftPalette.uiColor(giftPalette.inner).cgColor
+            ]
+            self.fallbackRadialGradient.colors = [
+                WalletCardGiftPalette.uiColor(giftPalette.accent, alpha: 0.08).cgColor,
+                UIColor.clear.cgColor
+            ]
+        } else {
+            self.fallbackView.backgroundColor = UIColor(rgb: 0x0f83ff)
+            self.fallbackBaseGradient.colors = [UIColor(rgb: 0x0872fe).cgColor, UIColor(rgb: 0x1085fe).cgColor]
+            self.fallbackRadialGradient.colors = [UIColor(rgb: 0x1facff, alpha: 0.35).cgColor, UIColor.clear.cgColor]
+        }
+        CATransaction.commit()
     }
 }

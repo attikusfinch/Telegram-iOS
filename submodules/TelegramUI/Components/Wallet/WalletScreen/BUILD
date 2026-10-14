@@ -39,6 +39,7 @@ swift_library(
         "//submodules/UndoUI",
         "//submodules/SettingsUI",
         "//submodules/TelegramUI/Components/Wallet/WalletCardComponent",
+        "//submodules/TelegramUI/Components/Gifts/GiftItemComponent",
         "//submodules/TelegramUI/Components/Premium/PremiumDiamondComponent",
         "//submodules/WalletContext",
         "//submodules/PasscodeCore",

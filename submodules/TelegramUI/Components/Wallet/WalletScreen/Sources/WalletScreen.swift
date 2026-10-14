@@ -802,6 +802,8 @@ private final class WalletScreenComponent: Component {
         private var restorationSession: PasscodeSession?
         private var restorationGeneration = 0
         private var accountContext: AccountContext?
+        private var giftThemeAccountId: Int64?
+        private var selectedCardGift: StarGift.UniqueGift?
         private var accountName = ""
         private var accountPeerDisposable: Disposable?
         private var existingWaltBalance: WalletExistingBalance?
@@ -2589,6 +2591,66 @@ private final class WalletScreenComponent: Component {
             controller.push(component.context.sharedContext.makeWalletSettingsScreen(context: component.context))
         }
 
+        private func openGiftThemes() {
+            guard let component = self.component, let controller = self.environment?.controller() else {
+                return
+            }
+            let accountId = component.context.account.id.int64
+            controller.push(WalletGiftThemeScreen(context: component.context, selectedGift: self.selectedCardGift, completion: { [weak self] gift in
+                guard let self, self.component?.context.account.id.int64 == accountId else {
+                    return
+                }
+                // Persist the visual metadata only, without ownership, prices or
+                // the original gift's sender and message.
+                let visualGift = gift.map { gift in
+                    StarGift.UniqueGift(
+                        id: gift.id,
+                        giftId: gift.giftId,
+                        title: gift.title,
+                        number: gift.number,
+                        slug: gift.slug,
+                        owner: nil,
+                        attributes: gift.attributes.filter { attribute in
+                            switch attribute {
+                            case .model, .pattern, .backdrop:
+                                return true
+                            default:
+                                return false
+                            }
+                        },
+                        availability: gift.availability,
+                        giftAddress: nil,
+                        resellAmounts: nil,
+                        resellForTonOnly: false,
+                        releasedBy: nil,
+                        valueAmount: nil,
+                        valueCurrency: nil,
+                        valueUsdAmount: nil,
+                        flags: [],
+                        themePeerId: nil,
+                        peerColor: nil,
+                        hostPeerId: nil,
+                        minOfferStars: nil,
+                        craftChancePermille: nil
+                    )
+                }
+                guard WalletGiftThemeStore<StarGift.UniqueGift>(accountId: accountId).save(visualGift) else {
+                    let data = self.component?.context.sharedContext.currentPresentationData.with { $0 }
+                    let isRussian = data?.strings.primaryComponent.languageCode.hasPrefix("ru") ?? false
+                    if let context = self.component?.context {
+                        self.environment?.controller()?.present(textAlertController(context: context,
+                            title: isRussian ? "Не удалось сохранить тему" : "Could Not Save Theme",
+                            text: isRussian ? "Попробуйте выбрать подарок ещё раз." : "Try selecting the gift again.",
+                            actions: [TextAlertAction(type: .defaultAction, title: data?.strings.Common_OK ?? "OK", action: {})]
+                        ), in: .window(.root))
+                    }
+                    return
+                }
+                self.selectedCardGift = visualGift
+                self.componentState?.updated(transition: UIAccessibility.isReduceMotionEnabled ? .immediate : .easeInOut(duration: 0.25))
+            }))
+        }
+
         private func openWalletApps() {
             guard let component = self.component, let controller = self.environment?.controller() else {
                 return
@@ -2730,6 +2792,18 @@ private final class WalletScreenComponent: Component {
             let hasTouchId = biometricContext.biometryType == .touchID
 
             let items: [ContextMenuItem] = [
+                .action(ContextMenuActionItem(
+                    text: presentationData.strings.primaryComponent.languageCode.hasPrefix("ru") ? "Темы подарков" : "Gift Themes",
+                    icon: { theme in
+                        return generateTintedImage(image: UIImage(bundleImageName: "Premium/Stars/Gift"), color: theme.contextMenu.primaryColor)
+                    },
+                    action: { [weak self] contextController, _ in
+                        contextController?.dismiss(completion: { [weak self] in
+                            self?.openGiftThemes()
+                        })
+                    }
+                )),
+                .separator,
                 .action(ContextMenuActionItem(
                     text: presentationData.strings.Wallet_Currency,
                     textLayout: .secondLineWithValue(selectedCurrency.code),
@@ -3071,6 +3145,11 @@ private final class WalletScreenComponent: Component {
             self.component = component
             self.environment = environment
             self.componentState = state
+            let giftThemeAccountId = component.context.account.id.int64
+            if self.giftThemeAccountId != giftThemeAccountId {
+                self.giftThemeAccountId = giftThemeAccountId
+                self.selectedCardGift = WalletGiftThemeStore<StarGift.UniqueGift>(accountId: giftThemeAccountId).load()
+            }
             let previousContentOffset = self.scrollView.contentOffset
             let clippingFrame = CGRect(origin: .zero, size: availableSize)
             ComponentTransition.immediate.setFrame(view: self.cardBalanceClippingView, frame: clippingFrame)
@@ -3256,6 +3335,8 @@ private final class WalletScreenComponent: Component {
             let cardSize = self.card.update(
                 transition: transition,
                 component: AnyComponent(WalletCardComponent(
+                    context: component.context,
+                    giftTheme: self.selectedCardGift,
                     theme: environment.theme,
                     balance: self.displayBalance,
                     fiatCurrency: fiatCurrency,

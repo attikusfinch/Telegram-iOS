@@ -15,6 +15,11 @@ import PremiumDiamondComponent
 import TelegramPresentationData
 import TelegramStringFormatting
 import WalletContext
+import TelegramCore
+import AccountContext
+import EmojiTextAttachmentView
+import TextFormat
+import PeerInfoCoverComponent
 
 private class WalletCardContentView: UIView {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -40,6 +45,8 @@ private final class WalletCardTransformView: WalletCardContentView {
 }
 
 public final class WalletCardComponent: Component {
+    public let context: AccountContext?
+    public let giftTheme: StarGift.UniqueGift?
     public let theme: PresentationTheme
     public let balance: Int64?
     public let fiatCurrency: WalletContext.FiatCurrency
@@ -52,6 +59,8 @@ public final class WalletCardComponent: Component {
     public let qrPressed: () -> Void
 
     public init(
+        context: AccountContext? = nil,
+        giftTheme: StarGift.UniqueGift? = nil,
         theme: PresentationTheme = defaultDarkPresentationTheme,
         balance: Int64?,
         fiatCurrency: WalletContext.FiatCurrency,
@@ -63,6 +72,8 @@ public final class WalletCardComponent: Component {
         cardPressed: (() -> Void)? = nil,
         qrPressed: @escaping () -> Void
     ) {
+        self.context = context
+        self.giftTheme = giftTheme
         self.theme = theme
         self.balance = balance
         self.fiatCurrency = fiatCurrency
@@ -76,6 +87,9 @@ public final class WalletCardComponent: Component {
     }
 
     public static func ==(lhs: WalletCardComponent, rhs: WalletCardComponent) -> Bool {
+        if lhs.context !== rhs.context || lhs.giftTheme != rhs.giftTheme {
+            return false
+        }
         if lhs.theme !== rhs.theme {
             return false
         }
@@ -116,6 +130,14 @@ public final class WalletCardComponent: Component {
         private let shadowView = UIView()
         private let backgroundView = WalletCardBackgroundView()
         private let foregroundView = UIControl()
+        private let giftDecorationView = UIView()
+        private let giftPatternMask = CAGradientLayer()
+        private var giftPattern: ComponentView<Empty>?
+        private var giftIconView: UIView?
+        private var giftIconLayer: InlineStickerItemLayer?
+        private var giftModelFileId: Int64?
+        private var giftThemeId: Int64?
+        private weak var giftContext: AccountContext?
         private let scrollShadingLayer = CAGradientLayer()
         private let balanceTransitionView = WalletCardContentView()
         private weak var balanceTransitionContainer: UIView?
@@ -222,6 +244,17 @@ public final class WalletCardComponent: Component {
             self.foregroundView.layer.allowsEdgeAntialiasing = true
             self.foregroundView.addTarget(self, action: #selector(self.cardPressed), for: .touchUpInside)
             self.addSubview(self.foregroundView)
+
+            self.giftDecorationView.isUserInteractionEnabled = false
+            self.giftDecorationView.clipsToBounds = true
+            self.giftPatternMask.startPoint = CGPoint(x: 0.0, y: 0.5)
+            self.giftPatternMask.endPoint = CGPoint(x: 1.0, y: 0.5)
+            self.giftPatternMask.colors = [UIColor.clear.cgColor, UIColor.clear.cgColor, UIColor.white.cgColor]
+            self.giftPatternMask.locations = [0.0, 0.40, 0.86]
+            self.giftDecorationView.layer.mask = self.giftPatternMask
+            if #available(iOS 13.0, *) {
+                self.giftDecorationView.layer.cornerCurve = .continuous
+            }
 
             self.scrollShadingLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
             self.scrollShadingLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
@@ -390,7 +423,8 @@ public final class WalletCardComponent: Component {
                     height: size.height + projectionPadding * 2.0
                 )
             )
-            self.backgroundView.update(cardSize: size, cornerRadius: cornerRadius)
+            let giftAppearance = self.updateGiftTheme(component: component, size: size, scale: scale, cornerRadius: cornerRadius, transition: transition)
+            self.backgroundView.update(cardSize: size, cornerRadius: cornerRadius, giftPalette: giftAppearance.palette)
 
             let formattedBalance: String
             if let balance = component.balance {
@@ -431,7 +465,7 @@ public final class WalletCardComponent: Component {
             }
 
             let mainColor = UIColor.white
-            let secondaryColor = UIColor(rgb: 0x6ddcff)
+            let secondaryColor = giftAppearance.palette?.accentColor ?? UIColor(rgb: 0x6ddcff)
             let qrSize = self.qrButton.update(
                 transition: transition,
                 component: AnyComponent(PlainButtonComponent(
@@ -731,7 +765,7 @@ public final class WalletCardComponent: Component {
                     maximumNumberOfLines: 1
                 )),
                 environment: {},
-                containerSize: CGSize(width: width - 96.0 * scale, height: 50.0)
+                containerSize: CGSize(width: giftAppearance.iconFrame.map { max(0.0, $0.minX - 36.0 * scale) } ?? (width - 96.0 * scale), height: 50.0)
             )
             if let nameView = self.name.view {
                 nameView.isUserInteractionEnabled = false
@@ -778,7 +812,7 @@ public final class WalletCardComponent: Component {
                     text: .plain(NSAttributedString(
                         string: addressText.uppercased(),
                         font: Font.monospace(11.0 * scale),
-                        textColor: UIColor(rgb: 0x055ac4, alpha: 0.8)
+                        textColor: giftAppearance.palette == nil ? UIColor(rgb: 0x055ac4, alpha: 0.8) : UIColor.white.withAlphaComponent(0.62)
                     )),
                     maximumNumberOfLines: 2,
                     lineSpacing: -0.05 * scale
@@ -812,6 +846,170 @@ public final class WalletCardComponent: Component {
             self.updateDiamondRefraction()
 
             return size
+        }
+
+        private func updateGiftTheme(component: WalletCardComponent, size: CGSize, scale: CGFloat, cornerRadius: CGFloat, transition: ComponentTransition) -> (palette: WalletCardGiftPalette?, iconFrame: CGRect?) {
+            guard let gift = component.giftTheme else {
+                self.giftPattern?.view?.removeFromSuperview()
+                self.giftPattern = nil
+                self.giftDecorationView.removeFromSuperview()
+                self.giftIconLayer?.isVisibleForAnimations = false
+                self.giftIconLayer?.removeFromSuperlayer()
+                self.giftIconLayer = nil
+                self.giftIconView?.removeFromSuperview()
+                self.giftIconView = nil
+                self.giftModelFileId = nil
+                self.giftThemeId = nil
+                self.giftContext = nil
+                self.scrollShadingLayer.colors = [UIColor(rgb: 0x001e4d, alpha: 0.22).cgColor, UIColor(rgb: 0x001e4d, alpha: 0.03).cgColor]
+                return (nil, nil)
+            }
+
+            var modelFile: TelegramMediaFile?
+            var patternFile: TelegramMediaFile?
+            var palette: WalletCardGiftPalette?
+            var patternColor: UIColor?
+            for attribute in gift.attributes {
+                switch attribute {
+                case let .model(_, file, _, _):
+                    modelFile = file
+                case let .pattern(_, file, _):
+                    patternFile = file
+                case let .backdrop(_, _, innerColor, outerColor, patternColorValue, _, _):
+                    palette = WalletCardGiftPalette(innerColor: UInt32(bitPattern: innerColor), outerColor: UInt32(bitPattern: outerColor), patternColor: UInt32(bitPattern: patternColorValue))
+                    patternColor = UIColor(rgb: UInt32(bitPattern: patternColorValue))
+                default:
+                    break
+                }
+            }
+
+            if let palette {
+                self.scrollShadingLayer.colors = [WalletCardGiftPalette.uiColor(palette.outer * 0.3, alpha: 0.22).cgColor, WalletCardGiftPalette.uiColor(palette.outer * 0.3, alpha: 0.03).cgColor]
+            } else {
+                self.scrollShadingLayer.colors = [UIColor(rgb: 0x001e4d, alpha: 0.22).cgColor, UIColor(rgb: 0x001e4d, alpha: 0.03).cgColor]
+            }
+
+            if self.giftContext !== component.context || self.giftThemeId != gift.id {
+                self.giftPattern?.view?.removeFromSuperview()
+                self.giftPattern = nil
+                self.giftIconLayer?.isVisibleForAnimations = false
+                self.giftIconLayer?.removeFromSuperlayer()
+                self.giftIconLayer = nil
+                self.giftIconView?.removeFromSuperview()
+                self.giftIconView = nil
+                self.giftModelFileId = nil
+                self.giftThemeId = gift.id
+                self.giftContext = component.context
+            }
+
+            guard let context = component.context else {
+                self.giftDecorationView.removeFromSuperview()
+                self.giftIconView?.removeFromSuperview()
+                self.giftIconView = nil
+                return (palette, nil)
+            }
+
+            let iconFrame = CGRect(x: size.width - 100.0 * scale, y: size.height - 73.0 * scale, width: 64.0 * scale, height: 64.0 * scale)
+            if let patternFile, let patternColor {
+                let pattern: ComponentView<Empty>
+                if let current = self.giftPattern {
+                    pattern = current
+                } else {
+                    pattern = ComponentView()
+                    self.giftPattern = pattern
+                }
+                let _ = pattern.update(
+                    transition: transition,
+                    component: AnyComponent(PeerInfoCoverComponent(
+                        context: context,
+                        subject: .custom(nil, nil, patternColor, patternFile.fileId.id),
+                        files: [patternFile.fileId.id: patternFile],
+                        isDark: false,
+                        avatarCenter: iconFrame.center,
+                        avatarSize: iconFrame.size,
+                        avatarScale: 1.0,
+                        defaultHeight: size.height,
+                        avatarTransitionFraction: 0.0,
+                        patternTransitionFraction: 0.0,
+                        patternIconScale: 0.8 * scale
+                    )),
+                    environment: {},
+                    containerSize: size
+                )
+                if self.giftDecorationView.superview == nil {
+                    self.foregroundView.insertSubview(self.giftDecorationView, at: 0)
+                }
+                transition.setFrame(view: self.giftDecorationView, frame: CGRect(origin: .zero, size: size))
+                self.giftDecorationView.layer.cornerRadius = cornerRadius
+                ComponentTransition.immediate.setFrame(layer: self.giftPatternMask, frame: CGRect(origin: .zero, size: size))
+                if let patternView = pattern.view {
+                    patternView.isUserInteractionEnabled = false
+                    if patternView.superview == nil {
+                        self.giftDecorationView.addSubview(patternView)
+                    }
+                    transition.setFrame(view: patternView, frame: CGRect(origin: .zero, size: size))
+                    transition.setAlpha(view: patternView, alpha: 0.5)
+                }
+            } else {
+                self.giftPattern?.view?.removeFromSuperview()
+                self.giftPattern = nil
+                self.giftDecorationView.removeFromSuperview()
+            }
+
+            if let modelFile {
+                let iconView: UIView
+                if let current = self.giftIconView {
+                    iconView = current
+                } else {
+                    iconView = UIView()
+                    iconView.isUserInteractionEnabled = false
+                    self.giftIconView = iconView
+                }
+                if iconView.superview == nil {
+                    self.foregroundView.addSubview(iconView)
+                }
+                transition.setFrame(view: iconView, frame: iconFrame)
+                if self.giftModelFileId != modelFile.fileId.id || self.giftIconLayer == nil {
+                    self.giftIconLayer?.isVisibleForAnimations = false
+                    self.giftIconLayer?.removeFromSuperlayer()
+                    self.giftModelFileId = modelFile.fileId.id
+                    let iconLayer = InlineStickerItemLayer(
+                        context: .account(context),
+                        userLocation: .other,
+                        attemptSynchronousLoad: true,
+                        emoji: ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: modelFile.fileId.id, file: modelFile),
+                        file: modelFile,
+                        cache: context.animationCache,
+                        renderer: context.animationRenderer,
+                        unique: false,
+                        placeholderColor: (palette?.accentColor ?? .white).withAlphaComponent(0.2),
+                        pointSize: CGSize(width: 128.0, height: 128.0),
+                        loopCount: 1
+                    )
+                    self.giftIconLayer = iconLayer
+                    iconView.layer.addSublayer(iconLayer)
+                    if !transition.animation.isImmediate {
+                        iconLayer.animateAlpha(from: 0.0, to: 1.0, duration: 0.25)
+                    }
+                }
+                if let giftIconLayer = self.giftIconLayer {
+                    transition.setFrame(layer: giftIconLayer, frame: CGRect(origin: .zero, size: iconFrame.size))
+                }
+                self.updateGiftAnimationState()
+                return (palette, iconFrame)
+            } else {
+                self.giftIconLayer?.isVisibleForAnimations = false
+                self.giftIconLayer?.removeFromSuperlayer()
+                self.giftIconLayer = nil
+                self.giftIconView?.removeFromSuperview()
+                self.giftIconView = nil
+                self.giftModelFileId = nil
+                return (palette, nil)
+            }
+        }
+
+        private func updateGiftAnimationState() {
+            self.giftIconLayer?.isVisibleForAnimations = self.component?.isVisible == true && self.isAnimationVisible && self.isScrollVisible && self.balanceTransitionFraction < 0.3 && self.window != nil && UIApplication.shared.applicationState == .active && !UIAccessibility.isReduceMotionEnabled
         }
 
         private func updateDiamondRefraction() {
@@ -936,6 +1134,7 @@ public final class WalletCardComponent: Component {
         }
 
         private func updateAnimationState() {
+            self.updateGiftAnimationState()
             if let diamond = self.gramDiamond.view as? InteractiveDiamondComponent.View {
                 diamond.isRenderingEnabled = self.isDiamondRenderingEnabled
                 self.updateDiamondInteraction()
@@ -1237,7 +1436,7 @@ public final class WalletCardComponent: Component {
             let detailsAlpha = 1.0 - easedDetailsFraction
             self.qrAlpha = detailsAlpha
             self.qrBlurRadius = easedDetailsFraction * 8.0
-            for view in [self.name.view, self.qrButton.view, self.address.view, self.addressOutline.view] {
+            for view in [self.name.view, self.qrButton.view, self.address.view, self.addressOutline.view, self.giftIconView, self.giftDecorationView] {
                 if let view {
                     ComponentTransition.immediate.setAlpha(view: view, alpha: detailsAlpha)
                     view.layer.removeAnimation(forKey: "filters.gaussianBlur.inputRadius")
@@ -1248,6 +1447,7 @@ public final class WalletCardComponent: Component {
                     }
                 }
             }
+            self.updateGiftAnimationState()
             if let currencyView = self.currency.view {
                 let fadeFraction = min(1.0, self.balanceTransitionFraction / 0.25)
                 let alpha = 1.0 - fadeFraction * fadeFraction * (3.0 - 2.0 * fadeFraction)
