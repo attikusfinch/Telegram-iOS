@@ -58,6 +58,41 @@ public final class WalletCardComponent: Component {
     public let cardPressed: (() -> Void)?
     public let qrPressed: () -> Void
 
+    private static func giftPalette(gift: StarGift.UniqueGift?) -> WalletCardGiftPalette? {
+        guard let gift else {
+            return nil
+        }
+        for attribute in gift.attributes {
+            if case let .backdrop(_, _, innerColor, outerColor, patternColor, _, _) = attribute {
+                return WalletCardGiftPalette(innerColor: UInt32(bitPattern: innerColor), outerColor: UInt32(bitPattern: outerColor), patternColor: UInt32(bitPattern: patternColor))
+            }
+        }
+        return nil
+    }
+
+    public static func giftThemeButtonColor(gift: StarGift.UniqueGift?) -> UIColor? {
+        guard let palette = Self.giftPalette(gift: gift) else {
+            return nil
+        }
+        return WalletCardGiftPalette.uiColor(palette.outer)
+    }
+
+    public static func giftThemeBackgroundColors(gift: StarGift.UniqueGift?) -> [UIColor]? {
+        guard let palette = Self.giftPalette(gift: gift) else {
+            return nil
+        }
+        let outer = WalletCardGiftPalette.uiColor(palette.outer)
+        let inner = WalletCardGiftPalette.uiColor(palette.inner)
+        return [outer, inner, inner, outer]
+    }
+
+    public static func giftThemePatternColor(gift: StarGift.UniqueGift?) -> UIColor? {
+        guard let palette = Self.giftPalette(gift: gift) else {
+            return nil
+        }
+        return WalletCardGiftPalette.uiColor(palette.pattern)
+    }
+
     public init(
         context: AccountContext? = nil,
         giftTheme: StarGift.UniqueGift? = nil,
@@ -131,7 +166,6 @@ public final class WalletCardComponent: Component {
         private let backgroundView = WalletCardBackgroundView()
         private let foregroundView = UIControl()
         private let giftDecorationView = UIView()
-        private let giftPatternMask = CAGradientLayer()
         private var giftPattern: ComponentView<Empty>?
         private var giftIconView: UIView?
         private var giftIconLayer: InlineStickerItemLayer?
@@ -247,11 +281,6 @@ public final class WalletCardComponent: Component {
 
             self.giftDecorationView.isUserInteractionEnabled = false
             self.giftDecorationView.clipsToBounds = true
-            self.giftPatternMask.startPoint = CGPoint(x: 0.0, y: 0.5)
-            self.giftPatternMask.endPoint = CGPoint(x: 1.0, y: 0.5)
-            self.giftPatternMask.colors = [UIColor.clear.cgColor, UIColor.clear.cgColor, UIColor.white.cgColor]
-            self.giftPatternMask.locations = [0.0, 0.40, 0.86]
-            self.giftDecorationView.layer.mask = self.giftPatternMask
             if #available(iOS 13.0, *) {
                 self.giftDecorationView.layer.cornerCurve = .continuous
             }
@@ -465,7 +494,7 @@ public final class WalletCardComponent: Component {
             }
 
             let mainColor = UIColor.white
-            let secondaryColor = giftAppearance.palette?.accentColor ?? UIColor(rgb: 0x6ddcff)
+            let secondaryColor = giftAppearance.palette == nil ? UIColor(rgb: 0x6ddcff) : UIColor.white
             let qrSize = self.qrButton.update(
                 transition: transition,
                 component: AnyComponent(PlainButtonComponent(
@@ -765,7 +794,11 @@ public final class WalletCardComponent: Component {
                     maximumNumberOfLines: 1
                 )),
                 environment: {},
-                containerSize: CGSize(width: giftAppearance.iconFrame.map { max(0.0, $0.minX - 36.0 * scale) } ?? (width - 96.0 * scale), height: 50.0)
+                containerSize: CGSize(width: giftAppearance.iconSize.map { max(0.0, width - 64.0 * scale - 6.0 * scale - $0.width) } ?? (width - 96.0 * scale), height: 50.0)
+            )
+            let nameFrame = CGRect(
+                origin: CGPoint(x: 24.0 * scale, y: size.height - nameSize.height - 19.0 * scale),
+                size: nameSize
             )
             if let nameView = self.name.view {
                 nameView.isUserInteractionEnabled = false
@@ -774,11 +807,16 @@ public final class WalletCardComponent: Component {
                 }
                 transition.setFrame(
                     view: nameView,
-                    frame: CGRect(
-                        origin: CGPoint(x: 24.0 * scale, y: size.height - nameSize.height - 19.0 * scale),
-                        size: nameSize
-                    )
+                    frame: nameFrame
                 )
+            }
+            if let giftIconView = self.giftIconView, let iconSize = giftAppearance.iconSize {
+                transition.setFrame(view: giftIconView, frame: CGRect(
+                    x: nameFrame.maxX + 6.0 * scale,
+                    y: nameFrame.midY - iconSize.height * 0.5,
+                    width: iconSize.width,
+                    height: iconSize.height
+                ))
             }
             if let qrView = self.qrButton.view {
                 if qrView.superview !== self.foregroundView {
@@ -848,7 +886,7 @@ public final class WalletCardComponent: Component {
             return size
         }
 
-        private func updateGiftTheme(component: WalletCardComponent, size: CGSize, scale: CGFloat, cornerRadius: CGFloat, transition: ComponentTransition) -> (palette: WalletCardGiftPalette?, iconFrame: CGRect?) {
+        private func updateGiftTheme(component: WalletCardComponent, size: CGSize, scale: CGFloat, cornerRadius: CGFloat, transition: ComponentTransition) -> (palette: WalletCardGiftPalette?, iconSize: CGSize?) {
             guard let gift = component.giftTheme else {
                 self.giftPattern?.view?.removeFromSuperview()
                 self.giftPattern = nil
@@ -867,17 +905,14 @@ public final class WalletCardComponent: Component {
 
             var modelFile: TelegramMediaFile?
             var patternFile: TelegramMediaFile?
-            var palette: WalletCardGiftPalette?
-            var patternColor: UIColor?
+            let palette = WalletCardComponent.giftPalette(gift: gift)
+            let patternColor = palette.map { WalletCardGiftPalette.uiColor($0.pattern) }
             for attribute in gift.attributes {
                 switch attribute {
                 case let .model(_, file, _, _):
                     modelFile = file
                 case let .pattern(_, file, _):
                     patternFile = file
-                case let .backdrop(_, _, innerColor, outerColor, patternColorValue, _, _):
-                    palette = WalletCardGiftPalette(innerColor: UInt32(bitPattern: innerColor), outerColor: UInt32(bitPattern: outerColor), patternColor: UInt32(bitPattern: patternColorValue))
-                    patternColor = UIColor(rgb: UInt32(bitPattern: patternColorValue))
                 default:
                     break
                 }
@@ -909,7 +944,7 @@ public final class WalletCardComponent: Component {
                 return (palette, nil)
             }
 
-            let iconFrame = CGRect(x: size.width - 100.0 * scale, y: size.height - 73.0 * scale, width: 64.0 * scale, height: 64.0 * scale)
+            let iconSize = CGSize(width: 22.0 * scale, height: 22.0 * scale)
             if let patternFile, let patternColor {
                 let pattern: ComponentView<Empty>
                 if let current = self.giftPattern {
@@ -925,10 +960,10 @@ public final class WalletCardComponent: Component {
                         subject: .custom(nil, nil, patternColor, patternFile.fileId.id),
                         files: [patternFile.fileId.id: patternFile],
                         isDark: false,
-                        avatarCenter: iconFrame.center,
-                        avatarSize: iconFrame.size,
+                        avatarCenter: CGPoint(x: size.width * 0.5, y: size.height * 0.5),
+                        avatarSize: CGSize(width: 100.0 * scale, height: 100.0 * scale),
                         avatarScale: 1.0,
-                        defaultHeight: size.height,
+                        defaultHeight: max(size.width, size.height),
                         avatarTransitionFraction: 0.0,
                         patternTransitionFraction: 0.0,
                         patternIconScale: 0.8 * scale
@@ -941,14 +976,13 @@ public final class WalletCardComponent: Component {
                 }
                 transition.setFrame(view: self.giftDecorationView, frame: CGRect(origin: .zero, size: size))
                 self.giftDecorationView.layer.cornerRadius = cornerRadius
-                ComponentTransition.immediate.setFrame(layer: self.giftPatternMask, frame: CGRect(origin: .zero, size: size))
                 if let patternView = pattern.view {
                     patternView.isUserInteractionEnabled = false
                     if patternView.superview == nil {
                         self.giftDecorationView.addSubview(patternView)
                     }
                     transition.setFrame(view: patternView, frame: CGRect(origin: .zero, size: size))
-                    transition.setAlpha(view: patternView, alpha: 0.5)
+                    transition.setAlpha(view: patternView, alpha: 0.34)
                 }
             } else {
                 self.giftPattern?.view?.removeFromSuperview()
@@ -968,7 +1002,6 @@ public final class WalletCardComponent: Component {
                 if iconView.superview == nil {
                     self.foregroundView.addSubview(iconView)
                 }
-                transition.setFrame(view: iconView, frame: iconFrame)
                 if self.giftModelFileId != modelFile.fileId.id || self.giftIconLayer == nil {
                     self.giftIconLayer?.isVisibleForAnimations = false
                     self.giftIconLayer?.removeFromSuperlayer()
@@ -983,7 +1016,7 @@ public final class WalletCardComponent: Component {
                         renderer: context.animationRenderer,
                         unique: false,
                         placeholderColor: (palette?.accentColor ?? .white).withAlphaComponent(0.2),
-                        pointSize: CGSize(width: 128.0, height: 128.0),
+                        pointSize: CGSize(width: iconSize.width * 2.0, height: iconSize.height * 2.0),
                         loopCount: 1
                     )
                     self.giftIconLayer = iconLayer
@@ -993,10 +1026,10 @@ public final class WalletCardComponent: Component {
                     }
                 }
                 if let giftIconLayer = self.giftIconLayer {
-                    transition.setFrame(layer: giftIconLayer, frame: CGRect(origin: .zero, size: iconFrame.size))
+                    transition.setFrame(layer: giftIconLayer, frame: CGRect(origin: .zero, size: iconSize))
                 }
                 self.updateGiftAnimationState()
-                return (palette, iconFrame)
+                return (palette, iconSize)
             } else {
                 self.giftIconLayer?.isVisibleForAnimations = false
                 self.giftIconLayer?.removeFromSuperlayer()

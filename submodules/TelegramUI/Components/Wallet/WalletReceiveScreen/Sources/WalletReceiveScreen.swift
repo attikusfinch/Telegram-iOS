@@ -18,6 +18,8 @@ import GlassBarButtonComponent
 import ButtonComponent
 import QrCode
 import PremiumDiamondComponent
+import WalletCardComponent
+import PeerInfoCoverComponent
 
 private final class WalletReceiveQrComponent: Component {
     let address: String
@@ -959,6 +961,7 @@ private final class WalletReceiveSheetContent: Component {
 
     let context: AccountContext
     let address: String
+    let giftTheme: StarGift.UniqueGift?
     let containerHeight: CGFloat
     let isPurchaseInProgress: Bool
     let isOpeningPurchase: Bool
@@ -969,6 +972,7 @@ private final class WalletReceiveSheetContent: Component {
     init(
         context: AccountContext,
         address: String,
+        giftTheme: StarGift.UniqueGift?,
         containerHeight: CGFloat,
         isPurchaseInProgress: Bool,
         isOpeningPurchase: Bool,
@@ -978,6 +982,7 @@ private final class WalletReceiveSheetContent: Component {
     ) {
         self.context = context
         self.address = address
+        self.giftTheme = giftTheme
         self.containerHeight = containerHeight
         self.isPurchaseInProgress = isPurchaseInProgress
         self.isOpeningPurchase = isOpeningPurchase
@@ -991,6 +996,9 @@ private final class WalletReceiveSheetContent: Component {
             return false
         }
         if lhs.address != rhs.address {
+            return false
+        }
+        if lhs.giftTheme != rhs.giftTheme {
             return false
         }
         if lhs.containerHeight != rhs.containerHeight {
@@ -1012,6 +1020,7 @@ private final class WalletReceiveSheetContent: Component {
         private static let cardFlipMaximumShadeOpacity: CGFloat = 0.55
 
         private let background = ComponentView<Empty>()
+        private var giftPattern: ComponentView<Empty>?
         private let closeButton = ComponentView<Empty>()
         private let addressRing = ComponentView<Empty>()
         private let cardContainerView = UIView()
@@ -1113,7 +1122,7 @@ private final class WalletReceiveSheetContent: Component {
                 let shadeLayer = CALayer()
                 shadeLayer.frame = faceView.bounds
                 shadeLayer.cornerRadius = faceView.layer.cornerRadius
-                shadeLayer.backgroundColor = Self.cardFlipShadeColor.cgColor
+                shadeLayer.backgroundColor = (WalletCardComponent.giftThemeButtonColor(gift: self.component?.giftTheme) ?? Self.cardFlipShadeColor).cgColor
                 shadeLayer.opacity = 0.0
                 faceView.layer.addSublayer(shadeLayer)
                 shadeLayer.animateKeyframes(
@@ -1185,13 +1194,15 @@ private final class WalletReceiveSheetContent: Component {
             environment: Environment<EnvironmentType>,
             transition: ComponentTransition
         ) -> CGSize {
-            if self.component?.address != component.address || UIAccessibility.isReduceMotionEnabled {
+            if self.component?.address != component.address || self.component?.giftTheme != component.giftTheme || UIAccessibility.isReduceMotionEnabled {
                 self.finishCardFlip()
             }
             self.component = component
             self.state = state
 
             let environment = environment[EnvironmentType.self].value
+            let giftColor = WalletCardComponent.giftThemeButtonColor(gift: component.giftTheme)
+            let accentColor = giftColor ?? UIColor(rgb: 0x087cff)
 
             let availableWidth = availableSize.width
             let horizontalInset: CGFloat = 30.0 + max(environment.safeInsets.left, environment.safeInsets.right)
@@ -1234,7 +1245,7 @@ private final class WalletReceiveSheetContent: Component {
                 transition: transition,
                 component: AnyComponent(WalletReceiveAddressRingComponent(
                     address: component.address,
-                    color: UIColor(rgb: 0x0052b3).withAlphaComponent(0.48),
+                    color: giftColor == nil ? UIColor(rgb: 0x0052b3).withAlphaComponent(0.48) : UIColor.white.withAlphaComponent(0.88),
                     cardSize: cardFrame.size,
                     cardCornerRadius: cardCornerRadius,
                     pathOffset: ringPathOffset
@@ -1262,7 +1273,7 @@ private final class WalletReceiveSheetContent: Component {
                     component: AnyComponent(Text(
                         text: environment.strings.Wallet_Receive_ShowQR,
                         font: Font.semibold(14.0),
-                        color: UIColor(rgb: 0x087cff)
+                        color: accentColor
                     ))
                 )
                 copyButtonAction = { [weak self] in
@@ -1276,7 +1287,7 @@ private final class WalletReceiveSheetContent: Component {
                             id: "icon",
                             component: AnyComponent(BundleIconComponent(
                                 name: "Wallet/ReceiveCopy",
-                                tintColor: UIColor(rgb: 0x087cff)
+                                tintColor: accentColor
                             ))
                         ),
                         AnyComponentWithIdentity(
@@ -1284,7 +1295,7 @@ private final class WalletReceiveSheetContent: Component {
                             component: AnyComponent(Text(
                                 text: environment.strings.Wallet_Receive_CopyAddress,
                                 font: Font.semibold(14.0),
-                                color: UIColor(rgb: 0x087cff)
+                                color: accentColor
                             ))
                         )
                     ], spacing: 2.0))
@@ -1298,7 +1309,7 @@ private final class WalletReceiveSheetContent: Component {
                 transition: .immediate,
                 component: AnyComponent(GlassBarButtonComponent(
                     size: CGSize(width: 44.0, height: 44.0),
-                    backgroundColor: UIColor(rgb: 0x1883fc),
+                    backgroundColor: giftColor ?? UIColor(rgb: 0x1883fc),
                     isDark: false,
                     state: .tintedGlass,
                     component: AnyComponentWithIdentity(id: "close", component: AnyComponent(
@@ -1338,14 +1349,14 @@ private final class WalletReceiveSheetContent: Component {
             let buyContent = HStack<Empty>([
                 AnyComponentWithIdentity(
                     id: "icon",
-                    component: AnyComponent(BundleIconComponent(name: "Wallet/ButtonBuy", tintColor: UIColor(rgb: 0x087cff)))
+                    component: AnyComponent(BundleIconComponent(name: "Wallet/ButtonBuy", tintColor: accentColor))
                 ),
                 AnyComponentWithIdentity(
                     id: "title",
                     component: AnyComponent(MultilineTextComponent(text: .plain(NSAttributedString(
                         string: availableWidth < 390.0 ? environment.strings.Wallet_Receive_BuyShort : environment.strings.Wallet_Receive_Buy,
                         font: Font.semibold(17.0),
-                        textColor: UIColor(rgb: 0x087cff)
+                        textColor: accentColor
                     ))))
                 )
             ], spacing: 10.0)
@@ -1355,7 +1366,7 @@ private final class WalletReceiveSheetContent: Component {
                     background: ButtonComponent.Background(
                         style: .legacy,
                         color: .white,
-                        foreground: UIColor(rgb: 0x087cff),
+                        foreground: accentColor,
                         pressedColor: UIColor(white: 0.92, alpha: 1.0),
                         cornerRadius: 26.0
                     ),
@@ -1376,7 +1387,7 @@ private final class WalletReceiveSheetContent: Component {
             let backgroundSize = self.background.update(
                 transition: transition,
                 component: AnyComponent(RoundedRectangle(
-                    colors: [
+                    colors: WalletCardComponent.giftThemeBackgroundColors(gift: component.giftTheme) ?? [
                         UIColor(rgb: 0x0079ff),
                         UIColor(rgb: 0x46b2ff),
                         UIColor(rgb: 0x46b2ff),
@@ -1395,6 +1406,60 @@ private final class WalletReceiveSheetContent: Component {
                     self.addSubview(backgroundView)
                 }
                 transition.setFrame(view: backgroundView, frame: CGRect(origin: .zero, size: backgroundSize))
+            }
+
+            var patternFile: TelegramMediaFile?
+            let patternColor = WalletCardComponent.giftThemePatternColor(gift: component.giftTheme)
+            if let gift = component.giftTheme {
+                for attribute in gift.attributes {
+                    switch attribute {
+                    case let .pattern(_, file, _):
+                        patternFile = file
+                    default:
+                        break
+                    }
+                }
+            }
+            if let patternFile, let patternColor {
+                let giftPattern: ComponentView<Empty>
+                if let current = self.giftPattern {
+                    giftPattern = current
+                } else {
+                    giftPattern = ComponentView()
+                    self.giftPattern = giftPattern
+                }
+                let patternSize = CGSize(width: availableWidth, height: contentHeight)
+                let _ = giftPattern.update(
+                    transition: transition,
+                    component: AnyComponent(PeerInfoCoverComponent(
+                        context: component.context,
+                        subject: .custom(nil, nil, patternColor, patternFile.fileId.id),
+                        files: [patternFile.fileId.id: patternFile],
+                        isDark: false,
+                        avatarCenter: CGPoint(x: patternSize.width / 2.0, y: patternSize.height / 2.0),
+                        avatarSize: CGSize(width: 100.0, height: 100.0),
+                        avatarScale: 1.0,
+                        defaultHeight: patternSize.height,
+                        avatarTransitionFraction: 0.0,
+                        patternTransitionFraction: 0.0,
+                        patternIconScale: 0.8
+                    )),
+                    environment: {},
+                    containerSize: patternSize
+                )
+                if let patternView = giftPattern.view, let backgroundView = self.background.view {
+                    patternView.isUserInteractionEnabled = false
+                    patternView.accessibilityElementsHidden = true
+                    if patternView.superview !== self {
+                        patternView.removeFromSuperview()
+                        self.insertSubview(patternView, aboveSubview: backgroundView)
+                    }
+                    transition.setFrame(view: patternView, frame: CGRect(origin: .zero, size: patternSize))
+                    transition.setAlpha(view: patternView, alpha: 0.34)
+                }
+            } else {
+                self.giftPattern?.view?.removeFromSuperview()
+                self.giftPattern = nil
             }
             if let addressRingView = self.addressRing.view {
                 if addressRingView.superview !== self {
@@ -1437,7 +1502,7 @@ private final class WalletReceiveSheetContent: Component {
                             component: AnyComponent(Text(
                                 text: "✓",
                                 font: Font.semibold(14.0),
-                                color: UIColor(rgb: 0x087cff)
+                                color: accentColor
                             ))
                         ),
                         AnyComponentWithIdentity(
@@ -1445,7 +1510,7 @@ private final class WalletReceiveSheetContent: Component {
                             component: AnyComponent(Text(
                                 text: environment.strings.Wallet_AddressCopied,
                                 font: Font.semibold(14.0),
-                                color: UIColor(rgb: 0x087cff)
+                                color: accentColor
                             ))
                         )
                     ], spacing: 6.0)),
@@ -1533,9 +1598,9 @@ private final class WalletReceiveSheetContent: Component {
                     component: AnyComponent(ButtonComponent(
                         background: ButtonComponent.Background(
                             style: .glass,
-                            color: UIColor(rgb: 0x087cff, alpha: 0.1),
-                            foreground: UIColor(rgb: 0x087cff),
-                            pressedColor: UIColor(rgb: 0xc8e4ff),
+                            color: giftColor?.withAlphaComponent(0.1) ?? UIColor(rgb: 0x087cff, alpha: 0.1),
+                            foreground: accentColor,
+                            pressedColor: giftColor?.withAlphaComponent(0.2) ?? UIColor(rgb: 0xc8e4ff),
                             cornerRadius: copyButtonHeight / 2.0
                         ),
                         content: copyButtonContent,
@@ -1649,10 +1714,12 @@ private final class WalletReceiveSheetComponent: CombinedComponent {
 
     let context: AccountContext
     let address: String
+    let giftTheme: StarGift.UniqueGift?
 
-    init(context: AccountContext, address: String) {
+    init(context: AccountContext, address: String, giftTheme: StarGift.UniqueGift?) {
         self.context = context
         self.address = address
+        self.giftTheme = giftTheme
     }
 
     static func ==(lhs: WalletReceiveSheetComponent, rhs: WalletReceiveSheetComponent) -> Bool {
@@ -1660,6 +1727,9 @@ private final class WalletReceiveSheetComponent: CombinedComponent {
             return false
         }
         if lhs.address != rhs.address {
+            return false
+        }
+        if lhs.giftTheme != rhs.giftTheme {
             return false
         }
         return true
@@ -1846,6 +1916,7 @@ private final class WalletReceiveSheetComponent: CombinedComponent {
                     content: AnyComponent(WalletReceiveSheetContent(
                         context: context.component.context,
                         address: address,
+                        giftTheme: context.component.giftTheme,
                         containerHeight: context.availableSize.height,
                         isPurchaseInProgress: componentState.isPurchaseInProgress,
                         isOpeningPurchase: componentState.isOpeningPurchase,
@@ -1859,7 +1930,7 @@ private final class WalletReceiveSheetComponent: CombinedComponent {
                         }
                     )),
                     style: .glass,
-                    backgroundColor: .color(UIColor(rgb: 0x0079ff)),
+                    backgroundColor: .color(WalletCardComponent.giftThemeButtonColor(gift: context.component.giftTheme) ?? UIColor(rgb: 0x0079ff)),
                     followContentSizeChanges: true,
                     clipsContent: true,
                     autoAnimateOut: false,
@@ -1946,13 +2017,13 @@ public final class WalletReceiveScreen: ViewControllerComponentContainer {
     private var appeared: (() -> Void)?
     private var animatedDismissCompletion: (() -> Void)?
 
-    public init(context: AccountContext, address: String, appeared: (() -> Void)? = nil) {
+    public init(context: AccountContext, address: String, giftTheme: StarGift.UniqueGift? = nil, appeared: (() -> Void)? = nil) {
         self.context = context
         self.appeared = appeared
 
         super.init(
             context: context,
-            component: WalletReceiveSheetComponent(context: context, address: address),
+            component: WalletReceiveSheetComponent(context: context, address: address, giftTheme: giftTheme),
             navigationBarAppearance: .none,
             statusBarStyle: .ignore,
             theme: .default

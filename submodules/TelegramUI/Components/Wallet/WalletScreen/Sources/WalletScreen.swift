@@ -30,6 +30,7 @@ import MultilineTextComponent
 import HorizontalTabsComponent
 import GlassBackgroundComponent
 import WalletSendScreen
+import WalletReceiveScreen
 import WalletPeerSelectionScreen
 import SettingsUI
 import UndoUI
@@ -2380,9 +2381,10 @@ private final class WalletScreenComponent: Component {
                 return
             }
             let walletContext = component.walletContext
-            controller.push(component.context.sharedContext.makeWalletReceiveScreen(
+            controller.push(WalletReceiveScreen(
                 context: component.context,
                 address: walletAddress,
+                giftTheme: self.selectedCardGift,
                 appeared: { [weak self, weak walletContext] in
                     guard let self, let walletContext, self.walletContext === walletContext,
                           self.walletAddress == walletAddress else {
@@ -3400,11 +3402,14 @@ private final class WalletScreenComponent: Component {
             let addFundsButtonWidth = floorToScreenPixels((cardWidth - buttonsSpacing) * 0.5)
             let sendButtonWidth = cardWidth - buttonsSpacing - addFundsButtonWidth
             let buttonsOriginY = cardOriginY + cardSize.height + self.cardSpacing
+            let giftButtonColor = WalletCardComponent.giftThemeButtonColor(gift: self.selectedCardGift)
+            let buttonColor = giftButtonColor ?? environment.theme.list.itemCheckColors.fillColor
+            let buttonForegroundColor = giftButtonColor == nil ? environment.theme.list.itemCheckColors.foregroundColor : UIColor.white
             let buttonBackground = ButtonComponent.Background(
                 style: .glass,
-                color: environment.theme.list.itemCheckColors.fillColor,
-                foreground: environment.theme.list.itemCheckColors.foregroundColor,
-                pressedColor: environment.theme.list.itemCheckColors.fillColor.withMultipliedAlpha(0.9)
+                color: buttonColor,
+                foreground: buttonForegroundColor,
+                pressedColor: buttonColor.withMultipliedAlpha(0.9)
             )
             let isNewAddFundsButton = self.addFundsButton.view?.superview == nil
             self.addFundsButton.parentState = state
@@ -3417,7 +3422,7 @@ private final class WalletScreenComponent: Component {
                         component: AnyComponent(Text(
                             text: environment.strings.Wallet_AddFunds,
                             font: Font.semibold(17.0),
-                            color: environment.theme.list.itemCheckColors.foregroundColor
+                            color: buttonForegroundColor
                         ))
                     ),
                     isEnabled: walletAddress != nil,
@@ -3455,7 +3460,7 @@ private final class WalletScreenComponent: Component {
                         component: AnyComponent(Text(
                             text: environment.strings.Wallet_Send,
                             font: Font.semibold(17.0),
-                            color: environment.theme.list.itemCheckColors.foregroundColor
+                            color: buttonForegroundColor
                         ))
                     ),
                     isEnabled: walletAddress != nil && !self.isResolvingSigningAccess,

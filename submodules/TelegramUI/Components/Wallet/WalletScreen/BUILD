@@ -46,6 +46,7 @@ swift_library(
         "//submodules/Markdown",
         "//submodules/TelegramUI/Components/Wallet/WalletPeerSelectionScreen",
         "//submodules/TelegramUI/Components/Wallet/WalletSendScreen",
+        "//submodules/TelegramUI/Components/Wallet/WalletReceiveScreen",
         "//submodules/TelegramUI/Components/Wallet/WalletCollectibleItemComponent",
         "//submodules/TelegramUI/Components/Wallet/WalletTransactionItemComponent",
         "//submodules/TelegramUI/Components/Wallet/WalletTransactionScreen",

@@ -12,11 +12,14 @@ struct WalletCardGiftPalette: Equatable {
     let inner: SIMD3<Float>
     let outer: SIMD3<Float>
     let accent: SIMD3<Float>
+    let pattern: SIMD3<Float>
 
     init(innerColor: UInt32, outerColor: UInt32, patternColor: UInt32) {
         self.inner = Self.readableColor(innerColor)
         self.outer = Self.readableColor(outerColor)
         let pattern = Self.linearColor(patternColor)
+        let patternLuminance = simd_dot(pattern, SIMD3<Float>(0.2126, 0.7152, 0.0722))
+        self.pattern = pattern * min(1.0, 0.20 / max(patternLuminance, 0.0001))
         self.accent = pattern * 0.24 + SIMD3<Float>(repeating: 0.76)
     }
 
