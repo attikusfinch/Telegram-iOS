@@ -62,18 +62,20 @@ public final class InteractiveDiamondComponent: Component {
     private let isVisible: Bool
     private let theme: PresentationTheme
     private let appearance: Appearance
+    private let materialTint: UIColor?
     private let expansionStyle: ExpansionStyle
     private let expandedCenter: CGPoint?
     private let animationMode: AnimationMode
     private let animateOnAppear: Bool
     private let tapToSpin: Bool
 
-    public init(size: CGSize, diamondWidth: CGFloat, isVisible: Bool, theme: PresentationTheme, appearance: Appearance = .blue, expansionStyle: ExpansionStyle = .centered, expandedCenter: CGPoint? = nil, animationMode: AnimationMode = .continuous, animateOnAppear: Bool = false, tapToSpin: Bool = false) {
+    public init(size: CGSize, diamondWidth: CGFloat, isVisible: Bool, theme: PresentationTheme, appearance: Appearance = .blue, materialTint: UIColor? = nil, expansionStyle: ExpansionStyle = .centered, expandedCenter: CGPoint? = nil, animationMode: AnimationMode = .continuous, animateOnAppear: Bool = false, tapToSpin: Bool = false) {
         self.size = size
         self.diamondWidth = diamondWidth
         self.isVisible = isVisible
         self.theme = theme
         self.appearance = appearance
+        self.materialTint = materialTint
         self.expansionStyle = expansionStyle
         self.expandedCenter = expandedCenter
         self.animationMode = animationMode
@@ -84,6 +86,7 @@ public final class InteractiveDiamondComponent: Component {
     public static func ==(lhs: InteractiveDiamondComponent, rhs: InteractiveDiamondComponent) -> Bool {
         return lhs.size == rhs.size && lhs.diamondWidth == rhs.diamondWidth
             && lhs.isVisible == rhs.isVisible && lhs.theme === rhs.theme && lhs.appearance == rhs.appearance
+            && lhs.materialTint == rhs.materialTint
             && lhs.expansionStyle == rhs.expansionStyle
             && lhs.expandedCenter == rhs.expandedCenter
             && lhs.animationMode == rhs.animationMode
@@ -640,6 +643,16 @@ public final class InteractiveDiamondComponent: Component {
             style.mainSparkleOnRotation = isInteractive
             style.widthPoints = Float(component.diamondWidth * (component.expansionStyle == .wallet ? self.walletScale : 1.0))
             style.appearance = component.appearance
+            style.materialTint = .zero
+            if let materialTint = component.materialTint?.resolvedColor(with: self.traitCollection) {
+                var hue: CGFloat = 0.0
+                var saturation: CGFloat = 0.0
+                var brightness: CGFloat = 0.0
+                var alpha: CGFloat = 0.0
+                if materialTint.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) {
+                    style.materialTint = SIMD4(Float(hue), Float(saturation), Float(brightness), 1.0)
+                }
+            }
             style.widthCompensation = component.expansionStyle != .wallet
             style.dragGrow = component.expansionStyle == .wallet ? 2.6 : (component.expansionStyle == .downward ? 3.0 : 1.0)
             style.growShift = component.expansionStyle == .downward && component.expandedCenter == nil ? 12.0 : 0.0

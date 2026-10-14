@@ -25,15 +25,18 @@ private final class WalletReceiveQrComponent: Component {
     let address: String
     let theme: PresentationTheme
     let isVisible: Bool
+    let materialTint: UIColor?
 
-    init(address: String, theme: PresentationTheme, isVisible: Bool) {
+    init(address: String, theme: PresentationTheme, isVisible: Bool, materialTint: UIColor?) {
         self.address = address
         self.theme = theme
         self.isVisible = isVisible
+        self.materialTint = materialTint
     }
 
     static func ==(lhs: WalletReceiveQrComponent, rhs: WalletReceiveQrComponent) -> Bool {
         return lhs.address == rhs.address && lhs.theme === rhs.theme && lhs.isVisible == rhs.isVisible
+            && lhs.materialTint == rhs.materialTint
     }
 
     final class View: UIView {
@@ -296,6 +299,7 @@ private final class WalletReceiveQrComponent: Component {
                         diamondWidth: cutoutFrame.width * 0.72,
                         isVisible: component.isVisible,
                         theme: component.theme,
+                        materialTint: component.materialTint,
                         animationMode: .continuous
                     )),
                     environment: {},
@@ -1564,7 +1568,8 @@ private final class WalletReceiveSheetContent: Component {
                         component: AnyComponent(WalletReceiveQrComponent(
                             address: component.address,
                             theme: environment.theme,
-                            isVisible: environment.isVisible
+                            isVisible: environment.isVisible,
+                            materialTint: giftColor
                         )),
                         environment: {},
                         containerSize: CGSize(width: qrSize, height: qrSize)

@@ -6,6 +6,7 @@ import Display
 struct DiamondStyle: Equatable {
     typealias Appearance = InteractiveDiamondComponent.Appearance
     var appearance: Appearance = .blue
+    var materialTint: SIMD4<Float> = .zero
     enum AnimationMode: String, CaseIterable, Sendable {
         case continuous
         case reference

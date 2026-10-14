@@ -187,6 +187,7 @@ struct Uniforms {
     float4 appearance; // palette identifier, reserved
     float4 referenceCrownFlash;
     float4 referencePavilionFlash;
+    float4 materialTint; // target hue/saturation/value, enabled; preserve the lit material's value
 };
 struct Raster {
     float4 position [[position]];
@@ -708,6 +709,19 @@ static float4 withHighlightBoost(float4 color, float boost) {
     return float4(straight * (1.0 + boost * smoothstep(0.55, 1.0, luminance)) * color.a, color.a);
 }
 
+float3 tintedDiamondMaterial(float3 color, float4 tint) {
+    if (tint.w <= 0.5) return color;
+
+    // Change the intrinsic material hue while retaining the moving facet
+    // contrast and neutral specular light from the authored optical shading.
+    float value = max(color.r, max(color.g, color.b));
+    float minimum = min(color.r, min(color.g, color.b));
+    float saturation = value > 0.00001 ? saturate((value - minimum) / value) : 0.0;
+    saturation *= saturate(tint.y);
+    float3 hue = abs(fract(float3(tint.x) + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return value * mix(float3(1.0), saturate(hue - 1.0), saturation);
+}
+
 float4 diamondSurface(Raster in, constant Uniforms &u, const device float4 *planes) {
     float3 n = normalize(in.normal);
     float cameraDistance = -u.projection[3].w / u.projection[2].w;
@@ -832,8 +846,10 @@ float4 diamondSurface(Raster in, constant Uniforms &u, const device float4 *plan
         glass = max(glass, float3(smoothstep(0.62, 0.95, luma)));
         color = mix(color, glass, w);
         float alpha = mix(1.0, mix(0.34, 0.94, max(lift, max(rim, seam))), w);
+        color = tintedDiamondMaterial(color, u.materialTint);
         return float4(saturate(color * u.parameters.z) * alpha, alpha);
     }
+    color = tintedDiamondMaterial(color, u.materialTint);
     return float4(saturate(color * u.parameters.z), 1);
 }
 
@@ -1026,5 +1042,6 @@ fragment float4 sparkleFragment(SparkleRaster in [[stage_in]], constant Uniforms
     // Keep premultiplied alpha valid when HDR exposes values above SDR white.
     alpha = saturate(alpha * in.strength);
     // Match the stone's HDR brightness so SDR-white flares do not darken its highlights.
+    color = tintedDiamondMaterial(color, u.materialTint);
     return withHighlightBoost(float4(color * alpha, alpha), u.appearance.z);
 }
